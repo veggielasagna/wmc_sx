@@ -96,6 +96,8 @@ jobs:
   store:
     # The same app with its Microsoft Store identity, packaged for upload to Partner Center.
     runs-on: windows-2022
+    permissions:
+      contents: write
     steps:
       - name: Get the code
         uses: actions/checkout@v4
@@ -157,3 +159,19 @@ jobs:
           name: WMC-SX-${{ env.APP_VERSION }}-store-upload
           path: upload/
           if-no-files-found: error
+
+      - name: Publish the Store file to the store-upload branch
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem upload | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path publish | Out-Null
+          Copy-Item $f.FullName publish\WMC-SX.msixupload
+          "$env:APP_VERSION" | Set-Content publish\VERSION.txt
+          cd publish
+          git init -q
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git checkout -q -b store-upload
+          git add -A
+          git commit -q -m "Store upload $env:APP_VERSION"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" store-upload
