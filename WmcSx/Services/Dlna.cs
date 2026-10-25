@@ -160,7 +160,11 @@ namespace WmcSx.Services
             var found = new List<DlnaServer>();
             try
             {
-                string xml = await Http.GetStringAsync(location);
+                string xml;
+                using (var descResp = await Http.GetAsync(location))
+                {
+                    xml = await ReadText(descResp);
+                }
                 var doc = XDocument.Parse(xml);
                 XNamespace ns = doc.Root.Name.Namespace;
                 string urlBase = (string)doc.Root.Element(ns + "URLBase");
@@ -213,6 +217,18 @@ namespace WmcSx.Services
             return found;
         }
 
+        /// <summary>
+        /// Reads a reply as UTF-8 text. Some NAS media servers send Content-Type
+        /// headers like charset="utf-8" (with quotes), which ReadAsStringAsync rejects.
+        /// </summary>
+        private static async Task<string> ReadText(HttpResponseMessage resp)
+        {
+            var bytes = await resp.Content.ReadAsByteArrayAsync();
+            var text = Encoding.UTF8.GetString(bytes);
+            if (text.Length > 0 && text[0] == '\uFEFF') text = text.Substring(1);
+            return text;
+        }
+
         public static DlnaServer Get(string id)
         {
             DlnaServer s;
@@ -243,7 +259,7 @@ namespace WmcSx.Services
             req.Headers.TryAddWithoutValidation("SOAPACTION", "\"" + srv.ServiceType + "#Browse\"");
 
             var resp = await Http.SendAsync(req);
-            string xml = await resp.Content.ReadAsStringAsync();
+            string xml = await ReadText(resp);
             if (!resp.IsSuccessStatusCode)
             {
                 throw new Exception("The media server answered with error " + (int)resp.StatusCode + ".");

@@ -425,7 +425,15 @@ namespace WmcSx
             var resp = await Dlna.Client.GetAsync(url);
             if (!resp.IsSuccessStatusCode) return null;
             var bytes = await resp.Content.ReadAsByteArrayAsync();
-            string type = resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : "image/jpeg";
+            string type = "image/jpeg";
+            try
+            {
+                if (resp.Content.Headers.ContentType != null) type = resp.Content.Headers.ContentType.MediaType;
+            }
+            catch
+            {
+                // Unusual header from the server; JPEG is the safe guess for artwork.
+            }
             var result = Tuple.Create(bytes, type);
 
             if (bytes.Length < 600 * 1024)
