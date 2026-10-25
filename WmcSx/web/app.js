@@ -46,6 +46,10 @@
     }
   };
   window.WmcBridge = Bridge;
+  // Send interface errors to the native log (LocalState\wmcsx_log.txt).
+  const nativeLog = text => { if (native) { try { native.postMessage({ id: 0, cmd: 'log', args: { text: String(text).slice(0, 2000) } }); } catch (e) { /* ignore */ } } };
+  window.addEventListener('error', e => nativeLog('error: ' + e.message + ' at ' + (e.filename || '') + ':' + (e.lineno || 0)));
+  window.addEventListener('unhandledrejection', e => nativeLog('unhandled promise: ' + (e.reason && e.reason.message ? e.reason.message : e.reason)));
   if (native) {
     native.addEventListener('message', e => {
       const m = e.data;
@@ -1342,6 +1346,7 @@
       await new Promise(res => { const s = document.createElement('script'); s.src = 'mock.js'; s.onload = res; s.onerror = res; document.head.appendChild(s); });
       if (!window.WmcMock) { document.body.textContent = 'mock.js missing'; return; }
     }
+    nativeLog('interface started, screen ' + window.innerWidth + 'x' + window.innerHeight + ' @' + window.devicePixelRatio);
     fit();
     window.addEventListener('resize', fit);
     tickClock();

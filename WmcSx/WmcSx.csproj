@@ -60,6 +60,7 @@
     <Compile Include="Services\Usb.cs" />
     <Compile Include="Services\Player.cs" />
     <Compile Include="Services\J.cs" />
+    <Compile Include="Services\Log.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

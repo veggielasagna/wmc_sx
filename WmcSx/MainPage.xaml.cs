@@ -48,37 +48,78 @@ namespace WmcSx
 
         public MainPage()
         {
+            Log.Write("MainPage: constructor");
             InitializeComponent();
             Current = this;
+            Log.Write("MainPage: layout loaded");
 
-            Dlna.ServerFound += s => RunOnUi(() => PostEvent("server", s.ToJson()));
-            player.Changed += () => RunOnUi(() => PostEvent("player", player.State()));
-
-            tick.Interval = TimeSpan.FromSeconds(1);
-            tick.Tick += (s, e) =>
+            try
             {
-                if (player.Music.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
+                Dlna.ServerFound += s => RunOnUi(() => PostEvent("server", s.ToJson()));
+                player.Changed += () => RunOnUi(() => PostEvent("player", player.State()));
+
+                tick.Interval = TimeSpan.FromSeconds(1);
+                tick.Tick += (s, e) =>
                 {
-                    PostEvent("player", player.State());
+                    if (player.Music.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
+                    {
+                        PostEvent("player", player.State());
+                    }
+                };
+                tick.Start();
+                Log.Write("MainPage: music player ready");
+
+                VideoView.SetMediaPlayer(video);
+                video.MediaOpened += (s, e) =>
+                {
+                    if (videoStart > 5) s.PlaybackSession.Position = TimeSpan.FromSeconds(videoStart);
+                };
+                video.MediaEnded += (s, e) => RunOnUi(() => CloseVideo(true));
+                video.MediaFailed += (s, e) =>
+                {
+                    Log.Write("Video failed: " + e.Error + " " + e.ErrorMessage);
+                    RunOnUi(() =>
+                    {
+                        CloseVideo(false);
+                        PostEvent("toast", J.S("That video couldn't be played. The format may not be supported."));
+                    });
+                };
+                player.Music.MediaFailed += (s, e) => Log.Write("Music failed: " + e.Error + " " + e.ErrorMessage);
+                Log.Write("MainPage: video player ready");
+
+                SystemNavigationManager.GetForCurrentView().BackRequested += OnBackRequested;
+                PreviewKeyDown += OnPreviewKeyDown;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("MainPage setup", ex);
+                ShowError(ex.Message);
+            }
+
+            Loaded += async (s, e) =>
+            {
+                Log.Write("MainPage: shown");
+                try
+                {
+                    await CreateWebView();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("CreateWebView", ex);
+                    ShowError(ex.Message);
                 }
             };
-            tick.Start();
+        }
 
-            VideoView.SetMediaPlayer(video);
-            video.MediaOpened += (s, e) =>
+        public void ShowError(string message)
+        {
+            try
             {
-                if (videoStart > 5) s.PlaybackSession.Position = TimeSpan.FromSeconds(videoStart);
-            };
-            video.MediaEnded += (s, e) => RunOnUi(() => CloseVideo(true));
-            video.MediaFailed += (s, e) => RunOnUi(() =>
+                ShowStatus("WMC SX hit a problem.\n\n" + message + "\n\nDetails were saved to LocalState\\wmcsx_log.txt.");
+            }
+            catch
             {
-                CloseVideo(false);
-                PostEvent("toast", J.S("That video couldn't be played. The format may not be supported."));
-            });
-
-            SystemNavigationManager.GetForCurrentView().BackRequested += OnBackRequested;
-            PreviewKeyDown += OnPreviewKeyDown;
-            Loaded += async (s, e) => await CreateWebView();
+            }
         }
 
         private void RunOnUi(Action action)
@@ -98,6 +139,7 @@ namespace WmcSx
                 System.Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--autoplay-policy=no-user-gesture-required");
                 System.Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF061C66");
 
+                Log.Write("WebView2: creating");
                 var view = new WebView2();
                 view.HorizontalAlignment = HorizontalAlignment.Stretch;
                 view.VerticalAlignment = VerticalAlignment.Stretch;
@@ -106,15 +148,20 @@ namespace WmcSx
 
                 try
                 {
+                    Log.Write("WebView2: starting the browser engine");
                     await view.EnsureCoreWebView2Async();
+                    Log.Write("WebView2: engine ready, version " + CoreWebView2Environment.GetAvailableBrowserVersionString());
                 }
                 catch (Exception ex)
                 {
+                    Log.Error("EnsureCoreWebView2Async", ex);
                     ShowStatus("WMC SX couldn't start its interface (WebView2 is missing or failed to load).\n\n" + ex.Message);
                     return;
                 }
 
                 var core = view.CoreWebView2;
+                core.ProcessFailed += (s, e) => Log.Write("WebView2: browser process failed: " + e.ProcessFailedKind);
+                core.NavigationCompleted += (s, e) => Log.Write("WebView2: page loaded, success=" + e.IsSuccess + " status=" + e.WebErrorStatus);
                 core.Settings.AreDevToolsEnabled = false;
                 core.Settings.AreDefaultContextMenusEnabled = false;
                 core.Settings.IsZoomControlEnabled = false;
@@ -261,6 +308,9 @@ namespace WmcSx
                     return player.State();
                 case "playVideo":
                     await OpenVideo(a);
+                    return null;
+                case "log":
+                    Log.Write("Interface: " + J.Str(a, "text", ""));
                     return null;
                 case "saveFile":
                 {
