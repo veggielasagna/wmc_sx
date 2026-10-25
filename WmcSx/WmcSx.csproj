@@ -93,7 +93,12 @@
       <Version>6.2.14</Version>
     </PackageReference>
     <PackageReference Include="Microsoft.UI.Xaml">
-      <Version>2.8.6</Version>
+      <Version>2.8.7</Version>
+    </PackageReference>
+    <!-- Referenced directly: the WebView2 version bundled with Microsoft.UI.Xaml
+         isn't detected on Xbox. Newer SDKs find the console's built-in runtime. -->
+    <PackageReference Include="Microsoft.Web.WebView2">
+      <Version>1.0.4078.44</Version>
     </PackageReference>
   </ItemGroup>
   <PropertyGroup Condition=" '$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '14.0' ">
