@@ -20,7 +20,7 @@
       try { localStorage.setItem('wmcsx.' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ }
     }
   };
-  const prefs = Object.assign({ sound: true, resume: true }, Store.get('prefs', {}));
+  const prefs = Object.assign({ sound: true, resume: true, intro: true }, Store.get('prefs', {}));
   const savePrefs = () => Store.set('prefs', prefs);
 
   /* ================================================================ Bridge to the native app */
@@ -164,6 +164,130 @@
           });
         });
       } catch (e) { /* audio unavailable */ }
+    }
+  };
+
+
+  /* ================================================================ Startup animation and sound */
+  // An original warm chord swell with a soft whoosh and rising glass chimes (about 6 seconds).
+  function introSound() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      if (!Sfx.ac) Sfx.ac = new AC();
+      const ac = Sfx.ac;
+      if (ac.state === 'suspended') ac.resume();
+      const t0 = ac.currentTime + 0.05;
+
+      const master = ac.createGain();
+      master.gain.setValueAtTime(0.0001, t0);
+      master.gain.exponentialRampToValueAtTime(0.85, t0 + 0.8);
+      master.gain.setValueAtTime(0.85, t0 + 4.3);
+      master.gain.exponentialRampToValueAtTime(0.0001, t0 + 6.6);
+      master.connect(ac.destination);
+
+      // Soft echo "room".
+      const room = ac.createGain(); room.gain.value = 0.55;
+      [0.13, 0.29, 0.47].forEach((d, i) => {
+        const dl = ac.createDelay(1); dl.delayTime.value = d;
+        const fb = ac.createGain(); fb.gain.value = 0.38 - i * 0.08;
+        const tone = ac.createBiquadFilter(); tone.type = 'lowpass'; tone.frequency.value = 1700 - i * 400;
+        room.connect(dl); dl.connect(tone); tone.connect(fb); fb.connect(dl); tone.connect(master);
+      });
+
+      // Warm pad that opens up like light coming in.
+      const padFilter = ac.createBiquadFilter();
+      padFilter.type = 'lowpass'; padFilter.Q.value = 0.6;
+      padFilter.frequency.setValueAtTime(260, t0);
+      padFilter.frequency.exponentialRampToValueAtTime(2400, t0 + 3.2);
+      padFilter.frequency.exponentialRampToValueAtTime(1400, t0 + 6.4);
+      padFilter.connect(master); padFilter.connect(room);
+      const pad = (notes, start, end, level) => {
+        notes.forEach(f => {
+          [[-5, 'sine'], [5, 'triangle']].forEach(v => {
+            const o = ac.createOscillator(), g = ac.createGain();
+            o.type = v[1]; o.frequency.value = f; o.detune.value = v[0];
+            g.gain.setValueAtTime(0.0001, start);
+            g.gain.exponentialRampToValueAtTime(level, start + 1.3);
+            g.gain.setValueAtTime(level, end - 1.2);
+            g.gain.exponentialRampToValueAtTime(0.0001, end);
+            o.connect(g); g.connect(padFilter);
+            o.start(start); o.stop(end + 0.05);
+          });
+        });
+      };
+      pad([73.42, 146.83, 220.0, 277.18, 329.63, 369.99], t0 + 0.1, t0 + 3.4, 0.022);   // D major 9
+      pad([98.0, 196.0, 246.94, 293.66, 369.99, 440.0], t0 + 2.6, t0+ 6.5, 0.02);      // G major 9
+
+      // Airy whoosh as the sky blooms.
+      const len = Math.floor(ac.sampleRate * 2.2);
+      const buf = ac.createBuffer(1, len, ac.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * 0.5;
+      const noise = ac.createBufferSource(); noise.buffer = buf;
+      const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.4;
+      bp.frequency.setValueAtTime(350, t0); bp.frequency.exponentialRampToValueAtTime(3200, t0 + 1.8);
+      const ng = ac.createGain();
+      ng.gain.setValueAtTime(0.0001, t0); ng.gain.exponentialRampToValueAtTime(0.06, t0 + 0.9); ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.1);
+      noise.connect(bp); bp.connect(ng); ng.connect(master); ng.connect(room);
+      noise.start(t0); noise.stop(t0 + 2.2);
+
+      // Glass chimes rising as the orb appears, then a sparkle under the title.
+      const bell = (f, t, level) => {
+        [[1, 1], [2.01, 0.28], [3.02, 0.12]].forEach(p => {
+          const o = ac.createOscillator(), g = ac.createGain();
+          o.type = 'sine'; o.frequency.value = f * p[0];
+          g.gain.setValueAtTime(0.0001, t);
+          g.gain.exponentialRampToValueAtTime(level * p[1], t + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 1.8 / p[0]);
+          o.connect(g); g.connect(master); g.connect(room);
+          o.start(t); o.stop(t + 2);
+        });
+      };
+      [587.33, 739.99, 880.0, 1108.73, 1318.51].forEach((f, i) => bell(f, t0 + 1.05 + i * 0.12, 0.045));
+      [1174.66, 1479.98, 1760.0].forEach((f, i) => bell(f, t0 + 2.55 + i * 0.09, 0.03));
+      bell(2349.32, t0 + 3.05, 0.018);
+      return master;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  const Intro = {
+    active: false,
+    finish: null,
+    play() {
+      return new Promise(resolve => {
+        const el = $('#intro');
+        if (!el) { resolve(); return; }
+        this.active = true;
+        el.classList.remove('hidden', 'out');
+        void el.offsetWidth;
+        el.classList.add('play');
+        const master = introSound();
+        let done = false;
+        const timer = setTimeout(() => this.finish(), 5600);
+        this.finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          if (master) {
+            try {
+              const now = Sfx.ac.currentTime;
+              master.gain.cancelScheduledValues(now);
+              master.gain.setValueAtTime(Math.max(0.0001, master.gain.value), now);
+              master.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
+            } catch (e) { /* ignore */ }
+          }
+          el.classList.add('out');
+          setTimeout(() => {
+            el.classList.add('hidden');
+            el.classList.remove('play', 'out');
+            this.active = false;
+            resolve();
+          }, 900);
+        };
+      });
     }
   };
 
@@ -751,6 +875,7 @@
     if (el && el !== cur) setFocus(el, { noScroll: true, silent: true });
   });
   document.addEventListener('click', e => {
+    if (Intro.active) { if (Intro.finish) Intro.finish(); return; }
     if (Viewer.open) { Viewer.close(); return; }
     const el = e.target.closest && e.target.closest('#screen .f');
     if (!el) return;
@@ -759,6 +884,7 @@
   });
 
   function handle(action) {
+    if (Intro.active) { if (Intro.finish) Intro.finish(); return; }
     switch (action) {
       case 'up': case 'down': case 'left': case 'right': moveFocus(action); break;
       case 'a':
@@ -1187,6 +1313,7 @@
       const toggle = (key, label, sub) => '<button class="toggle f' + (prefs[key] ? ' on' : '') + '" data-act="pref" data-pref="' + key + '" data-k="pref-' + key + '"><span><span style="display:block">' + esc(label) + '</span><span class="dim" style="font-size:18px;font-weight:500">' + esc(sub) + '</span></span><span class="sw"></span></button>';
       return '<div class="panel glass enter d1"><h2>Playback</h2>' +
         toggle('sound', 'Menu sounds', 'Soft chimes when you move around the menus') +
+        toggle('intro', 'Startup animation', 'Play the welcome animation and sound when WMC SX opens') +
         toggle('resume', 'Resume videos', 'Pick up videos where you left off') +
         '</div><div class="panel glass enter d2"><h2>Continue watching</h2><div class="kv">' + Object.keys(Resume.all()).length + ' videos saved partway through.</div><div class="btn-row"><button class="btn glass f" data-act="clearResume">Clear the list</button></div></div>';
     }
@@ -1361,7 +1488,12 @@
     try { appInfo = (await Bridge.call('info')) || {}; } catch (e) { appInfo = {}; }
     try { const st = await Bridge.call('state'); if (st) { P = st; lastTrackUrl = P.track ? P.track.url : null; } } catch (e) { /* ignore */ }
     if (route.name === 'now' && !P.track) { route = { name: 'home' }; stack = []; }
+    // A fresh start (nothing playing) shows the welcome animation and opens on Home.
+    // Coming back from background music skips it and returns to where you were.
+    const freshStart = !P.track || P.state === 'stopped';
+    if (freshStart) { route = { name: 'home' }; stack = []; }
     render({});
+    if (freshStart && prefs.intro) Intro.play(); // the NAS connects in the background meanwhile
 
     const saved = Lib.savedServer;
     if (saved && saved.location) {
