@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WMC SX</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="stage" class="sky">
+  <div class="bg" aria-hidden="true">
+    <div class="corner"></div>
+    <div class="swoop swB"></div>
+    <div class="swoop swA"></div>
+    <div class="swoop swC"></div>
+    <svg class="waves" viewBox="0 0 3840 260" preserveAspectRatio="none">
+      <defs><linearGradient id="ribbon" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#BFE4FF" stop-opacity="0"/><stop offset="0.25" stop-color="#BFE4FF" stop-opacity="0.35"/><stop offset="0.5" stop-color="#BFE4FF" stop-opacity="0.08"/><stop offset="0.75" stop-color="#BFE4FF" stop-opacity="0.35"/><stop offset="1" stop-color="#BFE4FF" stop-opacity="0"/></linearGradient></defs>
+      <path d="M0 150 C 320 60, 640 240, 960 150 S 1600 60, 1920 150 S 2560 240, 2880 150 S 3520 60, 3840 150" fill="none" stroke="url(#ribbon)" stroke-width="3"/>
+      <path d="M0 175 C 320 100, 640 230, 960 175 S 1600 100, 1920 175 S 2560 230, 2880 175 S 3520 100, 3840 175" fill="none" stroke="url(#ribbon)" stroke-width="1.5"/>
+    </svg>
+    <div class="glint" style="width:18px;height:18px;left:300px;animation-duration:22s;animation-delay:-4s"></div>
+    <div class="glint" style="width:12px;height:12px;left:760px;animation-duration:18s;animation-delay:-12s"></div>
+    <div class="glint" style="width:22px;height:22px;left:1240px;animation-duration:26s;animation-delay:-8s"></div>
+    <div class="glint" style="width:14px;height:14px;left:1620px;animation-duration:20s;animation-delay:-16s"></div>
+    <div class="vignette"></div>
+  </div>
+
+  <header id="brand">
+    <div id="clock" class="clock"></div>
+    <div class="logo">
+      <svg width="48" height="48" viewBox="0 0 52 52" aria-hidden="true"><defs><radialGradient id="orb" cx="0.4" cy="0.3" r="0.8"><stop offset="0" stop-color="#FFD9A0"/><stop offset="0.6" stop-color="#F28A1E"/><stop offset="1" stop-color="#B5520A"/></radialGradient></defs><circle cx="26" cy="26" r="24" fill="url(#orb)" stroke="#FFE2B8" stroke-width="2"/><path d="M21 16 L36 26 L21 36 Z" fill="#fff"/><ellipse cx="26" cy="15" rx="16" ry="8" fill="#fff" fill-opacity="0.35"/></svg>
+      <span>WMC SX</span>
+    </div>
+  </header>
+
+  <main id="screen"></main>
+
+  <div id="viewer" class="viewer hidden" aria-hidden="true">
+    <img id="viewerA" class="vimg" alt="">
+    <img id="viewerB" class="vimg" alt="">
+    <div id="viewerInfo" class="vinfo"></div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

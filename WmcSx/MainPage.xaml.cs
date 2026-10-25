@@ -1,0 +1,527 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.Web.WebView2.Core;
+using Windows.ApplicationModel;
+using Windows.Data.Json;
+using Windows.Media.Core;
+using Windows.Media.Playback;
+using Windows.Storage;
+using Windows.Storage.Streams;
+using Windows.System;
+using Windows.System.Profile;
+using Windows.UI.Core;
+using Windows.UI.Xaml;
+using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Input;
+using WmcSx.Services;
+
+namespace WmcSx
+{
+    /// <summary>
+    /// Hosts the interface (web\index.html in a WebView2) and connects it to the
+    /// native features: DLNA, USB drives, background music and video playback.
+    /// </summary>
+    public sealed partial class MainPage : Page
+    {
+        public static MainPage Current;
+
+        private const string AppHost = "app.wmcsx";
+        private const string MediaHost = "https://media.wmcsx/";
+
+        private WebView2 web;
+        private bool creatingWeb;
+        private bool inBackground;
+        private readonly Player player = new Player();
+        private readonly MediaPlayer video = new MediaPlayer();
+        private bool videoOpen;
+        private string videoKey;
+        private double videoStart;
+        private readonly DispatcherTimer tick = new DispatcherTimer();
+
+        private readonly Dictionary<string, Tuple<byte[], string>> imageCache = new Dictionary<string, Tuple<byte[], string>>();
+        private readonly LinkedList<string> imageOrder = new LinkedList<string>();
+
+        public MainPage()
+        {
+            InitializeComponent();
+            Current = this;
+
+            Dlna.ServerFound += s => RunOnUi(() => PostEvent("server", s.ToJson()));
+            player.Changed += () => RunOnUi(() => PostEvent("player", player.State()));
+
+            tick.Interval = TimeSpan.FromSeconds(1);
+            tick.Tick += (s, e) =>
+            {
+                if (player.Music.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
+                {
+                    PostEvent("player", player.State());
+                }
+            };
+            tick.Start();
+
+            VideoView.SetMediaPlayer(video);
+            video.MediaOpened += (s, e) =>
+            {
+                if (videoStart > 5) s.PlaybackSession.Position = TimeSpan.FromSeconds(videoStart);
+            };
+            video.MediaEnded += (s, e) => RunOnUi(() => CloseVideo(true));
+            video.MediaFailed += (s, e) => RunOnUi(() =>
+            {
+                CloseVideo(false);
+                PostEvent("toast", J.S("That video couldn't be played. The format may not be supported."));
+            });
+
+            SystemNavigationManager.GetForCurrentView().BackRequested += OnBackRequested;
+            PreviewKeyDown += OnPreviewKeyDown;
+            Loaded += async (s, e) => await CreateWebView();
+        }
+
+        private void RunOnUi(Action action)
+        {
+            var ignored = Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () => action());
+        }
+
+        // ---------------------------------------------------------------- WebView2
+
+        private async Task CreateWebView()
+        {
+            if (web != null || creatingWeb) return;
+            creatingWeb = true;
+            try
+            {
+                StatusText.Visibility = Visibility.Collapsed;
+                System.Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--autoplay-policy=no-user-gesture-required");
+                System.Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF061C66");
+
+                var view = new WebView2();
+                view.HorizontalAlignment = HorizontalAlignment.Stretch;
+                view.VerticalAlignment = VerticalAlignment.Stretch;
+                WebHost.Children.Add(view);
+                web = view;
+
+                try
+                {
+                    await view.EnsureCoreWebView2Async();
+                }
+                catch (Exception ex)
+                {
+                    ShowStatus("WMC SX couldn't start its interface (WebView2 is missing or failed to load).\n\n" + ex.Message);
+                    return;
+                }
+
+                var core = view.CoreWebView2;
+                core.Settings.AreDevToolsEnabled = false;
+                core.Settings.AreDefaultContextMenusEnabled = false;
+                core.Settings.IsZoomControlEnabled = false;
+                core.Settings.IsStatusBarEnabled = false;
+
+                string folder = Path.Combine(Package.Current.InstalledLocation.Path, "web");
+                core.SetVirtualHostNameToFolderMapping(AppHost, folder, CoreWebView2HostResourceAccessKind.Allow);
+                core.AddWebResourceRequestedFilter(MediaHost + "*", CoreWebView2WebResourceContext.All);
+                core.WebResourceRequested += OnWebResourceRequested;
+                core.WebMessageReceived += OnWebMessageReceived;
+                core.NavigationCompleted += (s, e) => view.Focus(FocusState.Programmatic);
+                core.Navigate("https://" + AppHost + "/index.html");
+            }
+            finally
+            {
+                creatingWeb = false;
+            }
+        }
+
+        private void TearDownWeb()
+        {
+            if (web == null) return;
+            var view = web;
+            web = null;
+            try
+            {
+                WebHost.Children.Clear();
+                var disposable = view as IDisposable;
+                if (disposable != null) disposable.Dispose();
+            }
+            catch
+            {
+            }
+            GC.Collect();
+        }
+
+        private void ShowStatus(string text)
+        {
+            StatusText.Text = text;
+            StatusText.Visibility = Visibility.Visible;
+        }
+
+        private void Post(JsonObject o)
+        {
+            if (web == null || web.CoreWebView2 == null) return;
+            try
+            {
+                web.CoreWebView2.PostWebMessageAsJson(o.Stringify());
+            }
+            catch
+            {
+            }
+        }
+
+        private void PostEvent(string name, IJsonValue data)
+        {
+            var o = new JsonObject();
+            o["event"] = J.S(name);
+            o["data"] = data ?? JsonValue.CreateNullValue();
+            Post(o);
+        }
+
+        // ---------------------------------------------------------------- Messages from the interface
+
+        private async void OnWebMessageReceived(CoreWebView2 sender, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            JsonObject msg;
+            try
+            {
+                msg = JsonObject.Parse(e.WebMessageAsJson);
+            }
+            catch
+            {
+                return;
+            }
+
+            var reply = new JsonObject();
+            reply["id"] = J.N(J.Num(msg, "id", 0));
+            try
+            {
+                IJsonValue argsValue;
+                JsonObject args = msg.TryGetValue("args", out argsValue) && argsValue.ValueType == JsonValueType.Object
+                    ? argsValue.GetObject()
+                    : new JsonObject();
+                var result = await Handle(J.Str(msg, "cmd", ""), args);
+                reply["ok"] = J.B(true);
+                reply["result"] = result ?? JsonValue.CreateNullValue();
+            }
+            catch (Exception ex)
+            {
+                reply["ok"] = J.B(false);
+                reply["error"] = J.S(ex.Message);
+            }
+            Post(reply);
+        }
+
+        private async Task<IJsonValue> Handle(string cmd, JsonObject a)
+        {
+            switch (cmd)
+            {
+                case "info":
+                {
+                    var o = new JsonObject();
+                    var v = Package.Current.Id.Version;
+                    o["version"] = J.S(v.Major + "." + v.Minor + "." + v.Build);
+                    o["device"] = J.S(AnalyticsInfo.VersionInfo.DeviceFamily);
+                    return o;
+                }
+                case "discover":
+                {
+                    var ignored = DiscoverSafe(null);
+                    return null;
+                }
+                case "probe":
+                {
+                    await DiscoverSafe(J.Str(a, "ip"));
+                    return null;
+                }
+                case "connect":
+                {
+                    var arr = new JsonArray();
+                    foreach (var s in await Dlna.LoadDescription(J.Str(a, "location", ""))) arr.Add(s.ToJson());
+                    return arr;
+                }
+                case "servers":
+                {
+                    var arr = new JsonArray();
+                    foreach (var s in Dlna.Servers) arr.Add(s.ToJson());
+                    return arr;
+                }
+                case "browse":
+                    return await Dlna.Browse(J.Str(a, "server"), J.Str(a, "id", "0"), (int)J.Num(a, "start", 0), (int)J.Num(a, "count", 200));
+                case "usbList":
+                    return await Usb.List(J.Str(a, "path"));
+                case "usbScan":
+                    return await Usb.Scan(J.Str(a, "path"), J.Str(a, "kind", "audio"), (int)J.Num(a, "max", 5000));
+                case "play":
+                    player.Play(J.Arr(a, "tracks"), (int)J.Num(a, "start", 0), J.Bool(a, "shuffle"));
+                    return player.State();
+                case "control":
+                    player.Control(J.Str(a, "action", ""), J.Num(a, "value", 0));
+                    return player.State();
+                case "state":
+                    return player.State();
+                case "playVideo":
+                    await OpenVideo(a);
+                    return null;
+                case "saveFile":
+                {
+                    var file = await ApplicationData.Current.LocalFolder.CreateFileAsync(SafeName(J.Str(a, "name")), CreationCollisionOption.ReplaceExisting);
+                    await FileIO.WriteTextAsync(file, J.Str(a, "text", ""));
+                    return null;
+                }
+                case "loadFile":
+                {
+                    var item = await ApplicationData.Current.LocalFolder.TryGetItemAsync(SafeName(J.Str(a, "name")));
+                    var file = item as StorageFile;
+                    if (file == null) return JsonValue.CreateNullValue();
+                    return J.S(await FileIO.ReadTextAsync(file));
+                }
+            }
+            throw new Exception("Unknown command: " + cmd);
+        }
+
+        private static async Task DiscoverSafe(string ip)
+        {
+            try
+            {
+                await Dlna.Discover(ip);
+            }
+            catch
+            {
+            }
+        }
+
+        private static string SafeName(string name)
+        {
+            name = name ?? "data";
+            foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            return name.Length == 0 ? "data" : name;
+        }
+
+        // ---------------------------------------------------------------- Images for the interface
+
+        private async void OnWebResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
+        {
+            var deferral = args.GetDeferral();
+            try
+            {
+                var uri = new Uri(args.Request.Uri);
+                var query = ParseQuery(uri.Query);
+                string path = uri.AbsolutePath;
+                IRandomAccessStream stream = null;
+                string type = "image/jpeg";
+
+                if (path == "/img")
+                {
+                    string url;
+                    if (query.TryGetValue("u", out url))
+                    {
+                        var data = await FetchImage(url);
+                        if (data != null)
+                        {
+                            type = data.Item2;
+                            stream = await ToStream(data.Item1);
+                        }
+                    }
+                }
+                else if (path == "/usbthumb")
+                {
+                    string p;
+                    if (query.TryGetValue("p", out p)) stream = await Usb.Thumbnail(p, 320);
+                }
+                else if (path == "/usbfile")
+                {
+                    string p;
+                    if (query.TryGetValue("p", out p))
+                    {
+                        stream = await Usb.Open(p);
+                        type = MimeFromExtension(p);
+                    }
+                }
+
+                if (stream != null)
+                {
+                    args.Response = sender.Environment.CreateWebResourceResponse(stream, 200, "OK",
+                        "Content-Type: " + type + "\nCache-Control: max-age=86400\nAccess-Control-Allow-Origin: *");
+                }
+                else
+                {
+                    args.Response = sender.Environment.CreateWebResourceResponse(null, 404, "Not Found", "Access-Control-Allow-Origin: *");
+                }
+            }
+            catch
+            {
+                try
+                {
+                    args.Response = sender.Environment.CreateWebResourceResponse(null, 404, "Not Found", "Access-Control-Allow-Origin: *");
+                }
+                catch
+                {
+                }
+            }
+            finally
+            {
+                deferral.Complete();
+            }
+        }
+
+        private async Task<Tuple<byte[], string>> FetchImage(string url)
+        {
+            Tuple<byte[], string> hit;
+            lock (imageCache)
+            {
+                if (imageCache.TryGetValue(url, out hit)) return hit;
+            }
+
+            var resp = await Dlna.Client.GetAsync(url);
+            if (!resp.IsSuccessStatusCode) return null;
+            var bytes = await resp.Content.ReadAsByteArrayAsync();
+            string type = resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : "image/jpeg";
+            var result = Tuple.Create(bytes, type);
+
+            if (bytes.Length < 600 * 1024)
+            {
+                lock (imageCache)
+                {
+                    if (!imageCache.ContainsKey(url))
+                    {
+                        imageCache[url] = result;
+                        imageOrder.AddLast(url);
+                        while (imageOrder.Count > 300)
+                        {
+                            imageCache.Remove(imageOrder.First.Value);
+                            imageOrder.RemoveFirst();
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+
+        private static async Task<IRandomAccessStream> ToStream(byte[] bytes)
+        {
+            var ms = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(ms.GetOutputStreamAt(0)))
+            {
+                writer.WriteBytes(bytes);
+                await writer.StoreAsync();
+                await writer.FlushAsync();
+                writer.DetachStream();
+            }
+            ms.Seek(0);
+            return ms;
+        }
+
+        private static Dictionary<string, string> ParseQuery(string query)
+        {
+            var d = new Dictionary<string, string>();
+            foreach (var part in (query ?? "").TrimStart('?').Split('&'))
+            {
+                if (part.Length == 0) continue;
+                int eq = part.IndexOf('=');
+                string k = eq < 0 ? part : part.Substring(0, eq);
+                string v = eq < 0 ? "" : part.Substring(eq + 1);
+                d[Uri.UnescapeDataString(k.Replace('+', ' '))] = Uri.UnescapeDataString(v.Replace('+', ' '));
+            }
+            return d;
+        }
+
+        private static string MimeFromExtension(string path)
+        {
+            switch (Path.GetExtension(path).ToLowerInvariant())
+            {
+                case ".png": return "image/png";
+                case ".gif": return "image/gif";
+                case ".bmp": return "image/bmp";
+                case ".webp": return "image/webp";
+                default: return "image/jpeg";
+            }
+        }
+
+        // ---------------------------------------------------------------- Video
+
+        private async Task OpenVideo(JsonObject a)
+        {
+            string url = J.Str(a, "url", "");
+            videoKey = J.Str(a, "key", url);
+            videoStart = J.Num(a, "start", 0);
+
+            MediaSource source;
+            if (url.StartsWith("usb:")) source = MediaSource.CreateFromStorageFile(await Usb.GetFile(url.Substring(4)));
+            else source = MediaSource.CreateFromUri(new Uri(url));
+
+            var item = new MediaPlaybackItem(source);
+            var props = item.GetDisplayProperties();
+            props.Type = Windows.Media.MediaPlaybackType.Video;
+            props.VideoProperties.Title = J.Str(a, "title", "");
+            item.ApplyDisplayProperties(props);
+
+            player.Pause();
+            video.Source = item;
+            videoOpen = true;
+            VideoView.Visibility = Visibility.Visible;
+            if (web != null) web.Visibility = Visibility.Collapsed;
+            video.Play();
+            VideoView.Focus(FocusState.Programmatic);
+        }
+
+        private void CloseVideo(bool ended)
+        {
+            if (!videoOpen) return;
+            videoOpen = false;
+            double pos = video.PlaybackSession.Position.TotalSeconds;
+            double dur = video.PlaybackSession.NaturalDuration.TotalSeconds;
+            video.Pause();
+            video.Source = null;
+            VideoView.Visibility = Visibility.Collapsed;
+            if (web != null)
+            {
+                web.Visibility = Visibility.Visible;
+                web.Focus(FocusState.Programmatic);
+            }
+
+            var o = new JsonObject();
+            o["key"] = J.S(videoKey);
+            o["position"] = J.N(ended ? 0 : pos);
+            o["duration"] = J.N(dur);
+            o["ended"] = J.B(ended);
+            PostEvent("videoClosed", o);
+        }
+
+        // ---------------------------------------------------------------- Input and lifecycle
+
+        private void OnBackRequested(object sender, BackRequestedEventArgs e)
+        {
+            e.Handled = true;
+            if (videoOpen) CloseVideo(false);
+            else PostEvent("back", null);
+        }
+
+        private void OnPreviewKeyDown(object sender, KeyRoutedEventArgs e)
+        {
+            if (videoOpen && (e.Key == VirtualKey.GamepadB || e.Key == VirtualKey.Escape))
+            {
+                CloseVideo(false);
+                e.Handled = true;
+            }
+        }
+
+        public void OnEnteredBackground()
+        {
+            inBackground = true;
+            if (videoOpen) CloseVideo(false);
+            // Xbox gives background apps very little memory. Drop the interface while
+            // music keeps playing; it's rebuilt when you come back.
+            if (player.Music.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
+            {
+                TearDownWeb();
+            }
+        }
+
+        public async void OnLeavingBackground()
+        {
+            inBackground = false;
+            if (web == null) await CreateWebView();
+            else PostEvent("player", player.State());
+        }
+    }
+}

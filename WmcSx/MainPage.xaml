@@ -1,0 +1,28 @@
+<Page
+    x:Class="WmcSx.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="#061C66">
+    <Grid>
+        <!-- The interface (a WebView2 showing web\index.html) is added here in code,
+             so it can be unloaded while music plays in the background. -->
+        <Grid x:Name="WebHost" />
+
+        <TextBlock x:Name="StatusText"
+                   Visibility="Collapsed"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   TextAlignment="Center"
+                   TextWrapping="Wrap"
+                   MaxWidth="700"
+                   FontSize="22"
+                   Foreground="White" />
+
+        <MediaPlayerElement x:Name="VideoView"
+                            Visibility="Collapsed"
+                            AreTransportControlsEnabled="True"
+                            Stretch="Uniform"
+                            Background="Black"
+                            IsTabStop="True" />
+    </Grid>
+</Page>

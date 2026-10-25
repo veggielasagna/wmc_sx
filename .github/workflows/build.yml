@@ -1,0 +1,94 @@
+name: Build WMC SX
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Pick the newest Windows SDK
+        id: sdk
+        shell: pwsh
+        run: |
+          $root = "C:\Program Files (x86)\Windows Kits\10\Platforms\UAP"
+          $sdks = Get-ChildItem $root -Directory | Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' } | Sort-Object { [version]$_.Name } -Descending
+          if (-not $sdks) { throw "No UWP SDK found on this runner" }
+          $v = $sdks[0].Name
+          Write-Host "Using Windows SDK $v"
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Stamp the version number
+        shell: pwsh
+        run: |
+          $version = "1.0.${{ github.run_number }}.0"
+          $manifest = "WmcSx\Package.appxmanifest"
+          (Get-Content $manifest -Raw) -replace 'Version="1\.0\.0\.0"', "Version=""$version""" | Set-Content $manifest -Encoding utf8
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "Version $version"
+
+      - name: Create a signing certificate
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type Custom -Subject "CN=WMCSX" -KeyUsage DigitalSignature -FriendlyName "WMC SX" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
+          $password = ConvertTo-SecureString -String "wmcsx" -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath "WmcSx\WmcSx_Signing.pfx" -Password $password | Out-Null
+          Write-Host "Certificate $($cert.Thumbprint)"
+
+      - name: Restore packages
+        run: msbuild WmcSx.sln -t:Restore -p:Configuration=Release -p:Platform=x64 -p:TargetPlatformVersion=${{ steps.sdk.outputs.version }}
+
+      - name: Build the app package
+        run: >
+          msbuild WmcSx\WmcSx.csproj
+          -p:Configuration=Release
+          -p:Platform=x64
+          -p:TargetPlatformVersion=${{ steps.sdk.outputs.version }}
+          -p:AppxBundle=Never
+          -p:UapAppxPackageBuildMode=SideloadOnly
+          -p:GenerateAppxPackageOnBuild=true
+          -p:AppxPackageDir=${{ github.workspace }}\out\
+          -p:AppxPackageSigningEnabled=true
+          -p:PackageCertificateKeyFile=WmcSx_Signing.pfx
+          -p:PackageCertificatePassword=wmcsx
+          -verbosity:minimal
+
+      - name: Gather the files to install
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path install | Out-Null
+          $pkg = Get-ChildItem out -Recurse -Include *.msix, *.appx | Where-Object { $_.FullName -notmatch '\\Dependencies\\' } | Select-Object -First 1
+          if (-not $pkg) { Get-ChildItem out -Recurse | Format-Table FullName; throw "No app package was produced" }
+          Copy-Item $pkg.FullName install\
+          Get-ChildItem out -Recurse -Include *.appx, *.msix | Where-Object { $_.FullName -match '\\Dependencies\\x64\\' } | ForEach-Object { Copy-Item $_.FullName install\ }
+          Get-ChildItem out -Recurse -Include *.cer | Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName install\ }
+          @"
+          WMC SX $env:APP_VERSION
+
+          Install on your Xbox (Dev Mode):
+          1. On a computer, open the Xbox Device Portal (the https://<xbox-ip>:11443 address shown in Dev Home).
+          2. On the Home page, choose Add.
+          3. Pick $($pkg.Name) as the app package and choose Next.
+          4. Tick "I want to specify optional packages", add every other .appx file in this folder, and choose Start.
+          5. When it finishes, WMC SX appears in Dev Home. Open it, or pin it.
+
+          To update later, install the newer package the same way; your settings and library are kept.
+          "@ | Set-Content install\HOW-TO-INSTALL.txt
+          Get-ChildItem install | Format-Table Name, Length
+
+      - name: Upload the install files
+        uses: actions/upload-artifact@v4
+        with:
+          name: WMC-SX-${{ env.APP_VERSION }}-install
+          path: install/
+          if-no-files-found: error
