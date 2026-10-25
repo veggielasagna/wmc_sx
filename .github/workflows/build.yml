@@ -92,3 +92,68 @@ jobs:
           name: WMC-SX-${{ env.APP_VERSION }}-install
           path: install/
           if-no-files-found: error
+
+  store:
+    # The same app with its Microsoft Store identity, packaged for upload to Partner Center.
+    runs-on: windows-2022
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Pick the newest Windows SDK
+        id: sdk
+        shell: pwsh
+        run: |
+          $root = "C:\Program Files (x86)\Windows Kits\10\Platforms\UAP"
+          $sdks = Get-ChildItem $root -Directory | Where-Object { $_.Name -match '^10\.0\.\d+\.\d+$' } | Sort-Object { [version]$_.Name } -Descending
+          "version=$($sdks[0].Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Use the Store identity and version
+        shell: pwsh
+        run: |
+          $version = "1.0.${{ github.run_number }}.0"
+          $manifest = "WmcSx\Package.appxmanifest"
+          $xml = Get-Content $manifest -Raw
+          $xml = $xml -replace 'Name="WMCSX\.MediaPlayer"', 'Name="44468veggielasagna.WMCSX"'
+          $xml = $xml -replace 'Publisher="CN=WMCSX"', 'Publisher="CN=C4BC2F88-1F46-469B-8BDD-4EE962D7C620"'
+          $xml = $xml -replace '<PublisherDisplayName>WMC SX</PublisherDisplayName>', '<PublisherDisplayName>veggielasagna</PublisherDisplayName>'
+          $xml = $xml -replace 'Version="1\.0\.0\.0"', "Version=""$version"""
+          Set-Content $manifest $xml -Encoding utf8
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          Select-String -Path $manifest -Pattern '<Identity', 'PublisherDisplayName'
+
+      - name: Restore packages
+        run: msbuild WmcSx.sln -t:Restore -p:Configuration=Release -p:Platform=x64 -p:TargetPlatformVersion=${{ steps.sdk.outputs.version }}
+
+      - name: Build the Store upload package
+        run: >
+          msbuild WmcSx\WmcSx.csproj
+          -p:Configuration=Release
+          -p:Platform=x64
+          -p:TargetPlatformVersion=${{ steps.sdk.outputs.version }}
+          -p:AppxBundle=Always
+          -p:AppxBundlePlatforms=x64
+          -p:UapAppxPackageBuildMode=StoreUpload
+          -p:GenerateAppxPackageOnBuild=true
+          -p:AppxPackageDir=${{ github.workspace }}\store\
+          -p:AppxPackageSigningEnabled=false
+          -verbosity:minimal
+
+      - name: Gather the Store file
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path upload | Out-Null
+          $f = Get-ChildItem store -Recurse -Include *.msixupload, *.appxupload | Select-Object -First 1
+          if (-not $f) { Get-ChildItem store -Recurse | Format-Table FullName; throw "No Store upload package was produced" }
+          Copy-Item $f.FullName upload\
+          Get-ChildItem upload | Format-Table Name, Length
+
+      - name: Upload the Store file
+        uses: actions/upload-artifact@v4
+        with:
+          name: WMC-SX-${{ env.APP_VERSION }}-store-upload
+          path: upload/
+          if-no-files-found: error
