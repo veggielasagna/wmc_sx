@@ -274,3 +274,5 @@ body.at-home #clock { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .intro.play * { animation-duration: .01s !important; animation-delay: 0s !important; }
 }
+
+.logbox { margin: 16px 0 0; max-height: 420px; overflow: auto; padding: 16px 18px; border-radius: 14px; background: rgba(2,10,40,.65); border: 1px solid rgba(170,215,255,.25); font: 15px/1.45 Consolas, "Cascadia Mono", monospace; color: #CFE3FF; white-space: pre-wrap; word-break: break-word; }

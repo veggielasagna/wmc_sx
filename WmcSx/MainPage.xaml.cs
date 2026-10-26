@@ -316,12 +316,27 @@ namespace WmcSx
         {
             switch (cmd)
             {
+                case "readLog":
+                {
+                    string text = "";
+                    try
+                    {
+                        var lines = File.ReadAllLines(Log.FilePath);
+                        text = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 80)));
+                    }
+                    catch (Exception ex)
+                    {
+                        text = "Couldn't read the log: " + ex.Message;
+                    }
+                    return J.S(text);
+                }
                 case "info":
                 {
                     var o = new JsonObject();
                     var v = Package.Current.Id.Version;
                     o["version"] = J.S(v.Major + "." + v.Minor + "." + v.Build);
                     o["device"] = J.S(AnalyticsInfo.VersionInfo.DeviceFamily);
+                    o["memory"] = J.S(MemoryText());
                     return o;
                 }
                 case "discover":
@@ -654,24 +669,64 @@ namespace WmcSx
             return null;
         }
 
-        private static bool loggedConvertFailure;
+        private static int convertLogs;
 
-        /// <summary>Decodes any image Windows can read (including HEIC when the system has the codec) to a JPEG no larger than maxSide.</summary>
+        private static void ConvertLog(string message)
+        {
+            if (convertLogs++ < 40) Log.Write(message);
+        }
+
+        /// <summary>Megabytes the app can still use before reaching its limit.</summary>
+        private static long FreeMegabytes()
+        {
+            return ((long)MemoryManager.AppMemoryUsageLimit - (long)MemoryManager.AppMemoryUsage) / 1048576;
+        }
+
+        /// <summary>
+        /// Decodes any image Windows can read (including HEIC) to a JPEG no larger than maxSide.
+        /// Small sizes use the preview picture stored inside the photo, which is quick and needs little memory.
+        /// </summary>
         private static async Task<byte[]> ConvertToJpeg(byte[] bytes, uint maxSide)
         {
             if (bytes == null || bytes.Length == 0) return null;
-            if (MemoryManager.AppMemoryUsage > MemoryManager.AppMemoryUsageLimit / 2)
-            {
-                Log.Write("Skipping a picture conversion: memory is high, " + MemoryText());
-                GC.Collect();
-                return null;
-            }
+            byte[] result = await TryConvert(bytes, maxSide, "original");
+            if (result != null) return result;
+
+            // Newer iPhone photos (iOS 18 and later) carry an extra HDR "tone map" picture that some
+            // HEIC decoders refuse. Hide it, so the decoder sees an ordinary photo, and try again.
+            var plain = HideToneMap(bytes);
+            if (plain != null) result = await TryConvert(plain, maxSide, "without HDR layer");
+            return result;
+        }
+
+        private static async Task<byte[]> TryConvert(byte[] bytes, uint maxSide, string attempt)
+        {
             try
             {
                 using (var input = await ToStream(bytes))
                 {
                     var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(input);
                     uint w = decoder.OrientedPixelWidth, h = decoder.OrientedPixelHeight;
+
+                    if (maxSide <= 640)
+                    {
+                        var small = await FromPreview(decoder, maxSide);
+                        if (small != null) return small;
+                    }
+
+                    // A full decode needs roughly 6 bytes per pixel while it works.
+                    long needMb = (long)decoder.PixelWidth * decoder.PixelHeight * 6 / 1048576 + 64;
+                    if (FreeMegabytes() < needMb)
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                    if (FreeMegabytes() < needMb)
+                    {
+                        ConvertLog("Picture " + w + "x" + h + " needs about " + needMb + " MB, only " + FreeMegabytes() + " MB free; " + (maxSide <= 640 ? "no preview inside either" : "showing the preview instead"));
+                        return null;
+                    }
+
                     double scale = Math.Min(1.0, (double)maxSide / Math.Max(w, h));
                     var transform = new Windows.Graphics.Imaging.BitmapTransform
                     {
@@ -685,31 +740,114 @@ namespace WmcSx
                         transform,
                         Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
                         Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb))
-                    using (var output = new InMemoryRandomAccessStream())
                     {
-                        var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.JpegEncoderId, output);
-                        encoder.SetSoftwareBitmap(bitmap);
-                        await encoder.FlushAsync();
-                        var result = new byte[output.Size];
-                        output.Seek(0);
-                        using (var reader = new DataReader(output.GetInputStreamAt(0)))
-                        {
-                            await reader.LoadAsync((uint)output.Size);
-                            reader.ReadBytes(result);
-                        }
-                        return result;
+                        return await EncodeJpeg(bitmap);
                     }
                 }
             }
             catch (Exception ex)
             {
-                if (!loggedConvertFailure)
-                {
-                    loggedConvertFailure = true;
-                    Log.Write("Image conversion failed (codec missing?): " + ex.Message);
-                }
+                ConvertLog("Picture conversion failed (" + attempt + ", " + (bytes.Length / 1024) + " KB, " + FreeMegabytes() + " MB free): " + ex.Message + " (0x" + ex.HResult.ToString("X8") + ")");
                 return null;
             }
+            finally
+            {
+                if (maxSide > 640) GC.Collect();
+            }
+        }
+
+        /// <summary>Uses the small preview picture stored inside the photo (about 400 pixels wide for iPhone photos).</summary>
+        private static async Task<byte[]> FromPreview(Windows.Graphics.Imaging.BitmapDecoder decoder, uint maxSide)
+        {
+            try
+            {
+                using (var thumb = await decoder.GetThumbnailAsync())
+                {
+                    if (thumb == null || thumb.Size == 0) return null;
+                    var td = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(thumb);
+                    // Too small to look good on a tile? Decode the real photo instead.
+                    if (Math.Max(td.PixelWidth, td.PixelHeight) < maxSide / 2) return null;
+                    double scale = Math.Min(1.0, (double)maxSide / Math.Max(td.PixelWidth, td.PixelHeight));
+                    var transform = new Windows.Graphics.Imaging.BitmapTransform
+                    {
+                        ScaledWidth = Math.Max(1u, (uint)(td.PixelWidth * scale)),
+                        ScaledHeight = Math.Max(1u, (uint)(td.PixelHeight * scale)),
+                        InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Fant
+                    };
+                    // If the preview is sideways compared with the photo as it should be shown, turn it.
+                    bool photoTall = decoder.OrientedPixelHeight > decoder.OrientedPixelWidth;
+                    bool previewTall = td.PixelHeight > td.PixelWidth;
+                    if (photoTall != previewTall && td.PixelWidth != td.PixelHeight)
+                        transform.Rotation = Windows.Graphics.Imaging.BitmapRotation.Clockwise90Degrees;
+                    using (var bitmap = await td.GetSoftwareBitmapAsync(
+                        Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                        Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
+                        transform,
+                        Windows.Graphics.Imaging.ExifOrientationMode.IgnoreExifOrientation,
+                        Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb))
+                    {
+                        return await EncodeJpeg(bitmap);
+                    }
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static async Task<byte[]> EncodeJpeg(Windows.Graphics.Imaging.SoftwareBitmap bitmap)
+        {
+            using (var output = new InMemoryRandomAccessStream())
+            {
+                var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.JpegEncoderId, output);
+                encoder.SetSoftwareBitmap(bitmap);
+                await encoder.FlushAsync();
+                var result = new byte[output.Size];
+                using (var reader = new DataReader(output.GetInputStreamAt(0)))
+                {
+                    await reader.LoadAsync((uint)output.Size);
+                    reader.ReadBytes(result);
+                }
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// Returns a copy of a HEIC photo whose HDR tone-map picture is renamed to an unknown type, which
+        /// decoders skip, or null if the photo has none. Only the header area (before the picture data) changes.
+        /// </summary>
+        private static byte[] HideToneMap(byte[] b)
+        {
+            int end = Math.Min(b.Length - 4, 256 * 1024);
+            // Stop at the start of the picture data ("mdat").
+            int mdat = IndexOf(b, new byte[] { (byte)'m', (byte)'d', (byte)'a', (byte)'t' }, 0, end);
+            if (mdat > 0) end = mdat;
+            var copy = (byte[])b.Clone();
+            bool changed = false;
+            for (int i = 0; i < end; i++)
+            {
+                if (copy[i] == 't' && copy[i + 1] == 'm' && copy[i + 2] == 'a' && copy[i + 3] == 'p')
+                {
+                    copy[i] = (byte)'x';
+                    copy[i + 1] = (byte)'x';
+                    copy[i + 2] = (byte)'x';
+                    copy[i + 3] = (byte)'x';
+                    changed = true;
+                }
+            }
+            return changed ? copy : null;
+        }
+
+        private static int IndexOf(byte[] b, byte[] pattern, int start, int end)
+        {
+            for (int i = start; i <= end - pattern.Length && i <= b.Length - pattern.Length; i++)
+            {
+                int k = 0;
+                while (k < pattern.Length && b[i + k] == pattern[k]) k++;
+                if (k == pattern.Length) return i;
+            }
+            return -1;
         }
 
         private static async Task<IRandomAccessStream> ToStream(byte[] bytes)

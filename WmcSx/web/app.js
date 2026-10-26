@@ -1350,10 +1350,13 @@
     return '<div class="panel glass enter d1"><h2>WMC SX</h2><div class="kv">Version <b id="aboutVersion">' + esc(appInfo.version || '1.0') + '</b> · ' + esc(appInfo.device || '') + '</div>' +
       '<div class="kv">Music, videos and photos from your NAS (DLNA) and USB drives. Music keeps playing in the background while you use other apps in Dev Mode.</div></div>' +
       '<div class="panel glass enter d2"><h2>Controller</h2><div class="kv"><b>A</b> select · <b>B</b> back · <b>X</b> play/pause · <b>Y</b> search · <b>LB/RB</b> previous/next song · <b>LT/RT</b> back 10s / ahead 30s · <b>Menu</b> Now Playing · <b>View</b> home</div></div>' +
-      '<div class="panel glass enter d3"><button class="btn glass f" data-act="noop">OK</button></div>';
+      '<div class="panel glass enter d3"><h2>Diagnostics</h2><div class="kv">If something isn’t working, the app’s log shows what happened. ' + (appInfo.memory ? 'Memory: ' + esc(appInfo.memory) + '.' : '') + '</div>' +
+      '<div class="btn-row"><button class="btn glass f" data-act="showLog" data-k="showLog">' + (logText ? 'Refresh log' : 'Show log') + '</button></div>' +
+      (logText ? '<pre class="logbox">' + esc(logText) + '</pre>' : '') + '</div>';
   }
   let discovering = false;
   let appInfo = {};
+  let logText = '';
 
   /* ================================================================ Actions */
   const Actions = {
@@ -1387,6 +1390,9 @@
     },
     useServer: el => { const s = Lib.servers.get(el.dataset.id); if (s && (!Lib.server || Lib.server.id !== s.id)) Lib.select(s, true).then(() => refreshIf(['settings'])); },
     pref: el => { const k = el.dataset.pref; prefs[k] = !prefs[k]; savePrefs(); el.classList.toggle('on', prefs[k]); if (k === 'sound' && prefs.sound) Sfx.play('select'); },
+    showLog: () => Promise.all([Bridge.call('readLog', {}), Bridge.call('info', {})])
+      .then(([t, info]) => { logText = t ? String(t).split('\n').reverse().join('\n') : '(empty)'; appInfo = Object.assign(appInfo, info || {}); refreshIf(['settings']); })
+      .catch(e => toast('Couldn’t read the log. ' + e.message)),
     clearResume: () => { Resume.clear(); toast('Continue watching cleared'); refreshIf(['settings']); },
     rebuild: () => { if (Lib.server && !Lib.building) { Lib.buildIndex(); refreshIf(['settings']); } },
     noop: () => {}
