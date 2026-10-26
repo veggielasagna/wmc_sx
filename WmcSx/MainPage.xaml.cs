@@ -92,7 +92,7 @@ namespace WmcSx
                 {
                     var r = videoRange;
                     Log.Write("Video opened in " + videoClock.ElapsedMilliseconds + " ms" +
-                        (r != null ? " (range reading: " + r.Requests + " requests, " + (r.BytesRead / 1024) + " KB read)" : " (plain streaming)"));
+                        (r != null ? " (range reading: " + r.Stats() + ")" : " (plain streaming)"));
                     if (videoStart > 5) s.PlaybackSession.Position = TimeSpan.FromSeconds(videoStart);
                     RunOnUi(() => VideoLoading.Visibility = Visibility.Collapsed);
                 };
@@ -135,6 +135,7 @@ namespace WmcSx
             Loaded += async (s, e) =>
             {
                 Log.Write("MainPage: shown");
+                var trim = TrimThumbsAsync();
                 try
                 {
                     await CreateWebView();
@@ -407,10 +408,12 @@ namespace WmcSx
 
                 if (path == "/img")
                 {
-                    string url;
+                    string url, sz;
+                    uint size = 0;
+                    if (query.TryGetValue("s", out sz)) uint.TryParse(sz, out size);
                     if (query.TryGetValue("u", out url))
                     {
-                        var data = await FetchImage(url);
+                        var data = await FetchImage(url, size);
                         if (data != null)
                         {
                             type = data.Item2;
@@ -431,7 +434,10 @@ namespace WmcSx
                         string ext = Path.GetExtension(p).ToLowerInvariant();
                         if (ext == ".heic" || ext == ".heif" || ext == ".tif" || ext == ".tiff")
                         {
-                            var jpeg = await ConvertToJpeg(await Usb.ReadAll(p), 2560);
+                            byte[] jpeg;
+                            await imageGate.WaitAsync();
+                            try { jpeg = await ConvertToJpeg(await Usb.ReadAll(p), 1920); }
+                            finally { imageGate.Release(); }
                             if (jpeg != null) stream = await ToStream(jpeg);
                         }
                         else
@@ -468,45 +474,160 @@ namespace WmcSx
             }
         }
 
-        private async Task<Tuple<byte[], string>> FetchImage(string url)
+        // At most two pictures are downloaded and converted at once, so a screen full of photos
+        // can't use up the app's memory (HEIC decoding needs about 50 MB per photo).
+        private static readonly System.Threading.SemaphoreSlim imageGate = new System.Threading.SemaphoreSlim(2, 2);
+        private static StorageFolder thumbFolder;
+
+        /// <summary>Gets a picture for the interface. With a size, it is shrunk to fit and saved on the console for next time.</summary>
+        private async Task<Tuple<byte[], string>> FetchImage(string url, uint size)
         {
+            string key = size + "|" + url;
             Tuple<byte[], string> hit;
             lock (imageCache)
             {
-                if (imageCache.TryGetValue(url, out hit)) return hit;
+                if (imageCache.TryGetValue(key, out hit)) return hit;
             }
 
-            var resp = await Dlna.Client.GetAsync(url);
-            if (!resp.IsSuccessStatusCode) return null;
-            var bytes = await resp.Content.ReadAsByteArrayAsync();
-            string type = SniffImageType(bytes);
-            if (type == null)
+            string file = Hash(key) + ".img";
+            if (size > 0)
             {
-                // Not a format the interface can show (HEIC from iPhones, TIFF…): convert it to JPEG.
-                var jpeg = await ConvertToJpeg(bytes, 2560);
-                if (jpeg == null) return null;
-                bytes = jpeg;
-                type = "image/jpeg";
+                var saved = await ReadThumb(file);
+                if (saved != null)
+                {
+                    hit = Tuple.Create(saved, SniffImageType(saved) ?? "image/jpeg");
+                    Remember(key, hit);
+                    return hit;
+                }
             }
-            var result = Tuple.Create(bytes, type);
 
-            if (bytes.Length < 600 * 1024)
+            byte[] bytes;
+            string type;
+            await imageGate.WaitAsync();
+            try
             {
+                // Another request may have finished the same picture while this one waited.
                 lock (imageCache)
                 {
-                    if (!imageCache.ContainsKey(url))
+                    if (imageCache.TryGetValue(key, out hit)) return hit;
+                }
+
+                var resp = await Dlna.Client.GetAsync(url);
+                if (!resp.IsSuccessStatusCode) return null;
+                bytes = await resp.Content.ReadAsByteArrayAsync();
+                type = SniffImageType(bytes);
+                bool convert = type == null;
+                bool shrink = size > 0 && bytes.Length > 80 * 1024 && type != "image/gif" && type != "image/svg+xml";
+                if (convert || shrink)
+                {
+                    var jpeg = await ConvertToJpeg(bytes, size > 0 ? size : 1920);
+                    if (jpeg != null)
                     {
-                        imageCache[url] = result;
-                        imageOrder.AddLast(url);
-                        while (imageOrder.Count > 300)
-                        {
-                            imageCache.Remove(imageOrder.First.Value);
-                            imageOrder.RemoveFirst();
-                        }
+                        bytes = jpeg;
+                        type = "image/jpeg";
+                    }
+                    else if (convert)
+                    {
+                        return null;
                     }
                 }
             }
+            finally
+            {
+                imageGate.Release();
+            }
+
+            var result = Tuple.Create(bytes, type);
+            if (bytes.Length < 600 * 1024) Remember(key, result);
+            if (size > 0) SaveThumb(file, bytes);
             return result;
+        }
+
+        private void Remember(string key, Tuple<byte[], string> value)
+        {
+            lock (imageCache)
+            {
+                if (imageCache.ContainsKey(key)) return;
+                imageCache[key] = value;
+                imageOrder.AddLast(key);
+                while (imageOrder.Count > 400)
+                {
+                    imageCache.Remove(imageOrder.First.Value);
+                    imageOrder.RemoveFirst();
+                }
+            }
+        }
+
+        private static string Hash(string s)
+        {
+            // FNV-1a, 64-bit: a stable file name for a picture address.
+            ulong h = 14695981039346656037UL;
+            foreach (char c in s)
+            {
+                h ^= c;
+                h *= 1099511628211UL;
+            }
+            return h.ToString("x16");
+        }
+
+        private static async Task<StorageFolder> ThumbFolder()
+        {
+            if (thumbFolder == null)
+                thumbFolder = await ApplicationData.Current.LocalCacheFolder.CreateFolderAsync("thumbs", CreationCollisionOption.OpenIfExists);
+            return thumbFolder;
+        }
+
+        private static async Task<byte[]> ReadThumb(string name)
+        {
+            try
+            {
+                var folder = await ThumbFolder();
+                var item = await folder.TryGetItemAsync(name) as StorageFile;
+                if (item == null) return null;
+                var buffer = await FileIO.ReadBufferAsync(item);
+                if (buffer.Length == 0) return null;
+                var bytes = new byte[buffer.Length];
+                using (var reader = DataReader.FromBuffer(buffer)) reader.ReadBytes(bytes);
+                return bytes;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static async void SaveThumb(string name, byte[] bytes)
+        {
+            try
+            {
+                var folder = await ThumbFolder();
+                var f = await folder.CreateFileAsync(name, CreationCollisionOption.ReplaceExisting);
+                await FileIO.WriteBytesAsync(f, bytes);
+            }
+            catch
+            {
+                // Saving is only a speed-up; the picture is fetched again next time.
+            }
+        }
+
+        /// <summary>Keeps the saved small pictures from growing without limit.</summary>
+        public static async Task TrimThumbsAsync()
+        {
+            try
+            {
+                var folder = await ThumbFolder();
+                var files = await folder.GetFilesAsync();
+                if (files.Count <= 6000) return;
+                Log.Write("Clearing " + files.Count + " saved thumbnails");
+                foreach (var f in files.OrderBy(x => x.DateCreated).Take(files.Count - 4000))
+                {
+                    try { await f.DeleteAsync(StorageDeleteOption.PermanentDelete); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("TrimThumbs", ex);
+            }
         }
 
         /// <summary>The image type from the file's first bytes, or null if the interface can't show it.</summary>
@@ -528,6 +649,12 @@ namespace WmcSx
         private static async Task<byte[]> ConvertToJpeg(byte[] bytes, uint maxSide)
         {
             if (bytes == null || bytes.Length == 0) return null;
+            if (MemoryManager.AppMemoryUsage > MemoryManager.AppMemoryUsageLimit / 2)
+            {
+                Log.Write("Skipping a picture conversion: memory is high, " + MemoryText());
+                GC.Collect();
+                return null;
+            }
             try
             {
                 using (var input = await ToStream(bytes))
@@ -541,12 +668,12 @@ namespace WmcSx
                         ScaledHeight = Math.Max(1u, (uint)(decoder.PixelHeight * scale)),
                         InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Fant
                     };
-                    var bitmap = await decoder.GetSoftwareBitmapAsync(
+                    using (var bitmap = await decoder.GetSoftwareBitmapAsync(
                         Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
                         Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
                         transform,
                         Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
-                        Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb);
+                        Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb))
                     using (var output = new InMemoryRandomAccessStream())
                     {
                         var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.JpegEncoderId, output);
@@ -659,7 +786,7 @@ namespace WmcSx
                 {
                     string type = range.ContentType;
                     if (string.IsNullOrEmpty(type) || !type.StartsWith("video/")) type = VideoMimeFromUrl(url);
-                    Log.Write("Video: range reading, " + (range.Size / 1048576) + " MB, " + type + ", checked in " + videoClock.ElapsedMilliseconds + " ms");
+                    Log.Write("Video: range reading, " + (range.Size / 1048576) + " MB, " + type + ", ready in " + videoClock.ElapsedMilliseconds + " ms. Layout: " + range.Layout);
                     source = MediaSource.CreateFromStream(range, type);
                 }
                 else

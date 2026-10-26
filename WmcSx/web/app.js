@@ -66,18 +66,21 @@
   }
 
   /* ================================================================ Media URLs and artwork */
-  function mediaUrl(u) {
+  // size: longest side in pixels for tiles and artwork. The app shrinks big pictures to that
+  // and keeps them on the console, so grids scroll smoothly and load instantly next time.
+  function mediaUrl(u, size) {
     if (!u) return '';
     if (u.indexOf('usbthumb:') === 0) return native ? 'https://media.wmcsx/usbthumb?p=' + encodeURIComponent(u.slice(9)) : '';
-    if (u.indexOf('usb:') === 0) return native ? 'https://media.wmcsx/usbfile?p=' + encodeURIComponent(u.slice(4)) : '';
+    if (u.indexOf('usb:') === 0) return native ? (size ? 'https://media.wmcsx/usbthumb?p=' : 'https://media.wmcsx/usbfile?p=') + encodeURIComponent(u.slice(4)) : '';
     if (!native) return u;
-    return 'https://media.wmcsx/img?u=' + encodeURIComponent(u);
+    return 'https://media.wmcsx/img?u=' + encodeURIComponent(u) + (size ? '&s=' + size : '');
   }
   const GRADS = ['#5FB4FF,#0F4FB8', '#7FE3D0,#127A8C', '#9AA8FF,#3A3FB0', '#FFC48A,#C25A14', '#8FE07A,#2C7A26', '#7CCBFF,#1E5FA8', '#C3A6FF,#5B37B0', '#6FD6F0,#0E6D90', '#FFB0C4,#B03A62', '#A8D8FF,#2B6CC4'];
   function hash(s) { let h = 0; s = String(s || ''); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+  const ART_SIZE = 480;
   function artBg(art, seed) {
     const g = 'linear-gradient(135deg,' + GRADS[hash(seed) % GRADS.length] + ')';
-    const u = mediaUrl(art);
+    const u = mediaUrl(art, ART_SIZE);
     // Single quotes: this text goes inside style="..." attributes, where a double quote would end the attribute.
     return u ? "background-image:url('" + u.replace(/'/g, '%27').replace(/"/g, '%22').replace(/[()\s]/g, c => encodeURIComponent(c)) + "')," + g : 'background-image:' + g;
   }
