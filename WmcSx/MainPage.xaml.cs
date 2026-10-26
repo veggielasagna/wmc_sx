@@ -32,6 +32,12 @@ namespace WmcSx
 
         private const string AppHost = "app.wmcsx";
         private const string MediaHost = "https://media.wmcsx/";
+        // Full-size photos come from a second address so the browser engine never queues them
+        // behind a screen full of tile pictures (it allows only a few requests per address).
+        private const string FullHost = "https://full.wmcsx/";
+        // Reading videos in byte ranges didn't make them start sooner (the wait is inside the
+        // Xbox's video player), so the player streams them itself as before.
+        private const bool UseRangeReading = false;
 
         private WebView2 web;
         private bool creatingWeb;
@@ -93,6 +99,7 @@ namespace WmcSx
                     var r = videoRange;
                     Log.Write("Video opened in " + videoClock.ElapsedMilliseconds + " ms" +
                         (r != null ? " (range reading: " + r.Stats() + ")" : " (plain streaming)"));
+                    LogTracks(s.Source as MediaPlaybackItem);
                     if (videoStart > 5) s.PlaybackSession.Position = TimeSpan.FromSeconds(videoStart);
                     RunOnUi(() => VideoLoading.Visibility = Visibility.Collapsed);
                 };
@@ -207,6 +214,7 @@ namespace WmcSx
                 string folder = Path.Combine(Package.Current.InstalledLocation.Path, "web");
                 core.SetVirtualHostNameToFolderMapping(AppHost, folder, CoreWebView2HostResourceAccessKind.Allow);
                 core.AddWebResourceRequestedFilter(MediaHost + "*", CoreWebView2WebResourceContext.All);
+                core.AddWebResourceRequestedFilter(FullHost + "*", CoreWebView2WebResourceContext.All);
                 core.WebResourceRequested += OnWebResourceRequested;
                 core.WebMessageReceived += OnWebMessageReceived;
                 core.NavigationCompleted += (s, e) => view.Focus(FocusState.Programmatic);
@@ -435,9 +443,9 @@ namespace WmcSx
                         if (ext == ".heic" || ext == ".heif" || ext == ".tif" || ext == ".tiff")
                         {
                             byte[] jpeg;
-                            await imageGate.WaitAsync();
+                            await fullGate.WaitAsync();
                             try { jpeg = await ConvertToJpeg(await Usb.ReadAll(p), 1920); }
-                            finally { imageGate.Release(); }
+                            finally { fullGate.Release(); }
                             if (jpeg != null) stream = await ToStream(jpeg);
                         }
                         else
@@ -477,6 +485,8 @@ namespace WmcSx
         // At most two pictures are downloaded and converted at once, so a screen full of photos
         // can't use up the app's memory (HEIC decoding needs about 50 MB per photo).
         private static readonly System.Threading.SemaphoreSlim imageGate = new System.Threading.SemaphoreSlim(2, 2);
+        // The photo being looked at has its own lane, so it never waits behind tiles.
+        private static readonly System.Threading.SemaphoreSlim fullGate = new System.Threading.SemaphoreSlim(1, 1);
         private static StorageFolder thumbFolder;
 
         /// <summary>Gets a picture for the interface. With a size, it is shrunk to fit and saved on the console for next time.</summary>
@@ -503,7 +513,8 @@ namespace WmcSx
 
             byte[] bytes;
             string type;
-            await imageGate.WaitAsync();
+            var gate = size > 0 ? imageGate : fullGate;
+            await gate.WaitAsync();
             try
             {
                 // Another request may have finished the same picture while this one waited.
@@ -534,7 +545,7 @@ namespace WmcSx
             }
             finally
             {
-                imageGate.Release();
+                gate.Release();
             }
 
             var result = Tuple.Create(bytes, type);
@@ -770,7 +781,7 @@ namespace WmcSx
             {
                 try
                 {
-                    range = await HttpRangeStream.TryOpen(new Uri(url), TimeSpan.FromSeconds(6));
+                    if (UseRangeReading) range = await HttpRangeStream.TryOpen(new Uri(url), TimeSpan.FromSeconds(6));
                 }
                 catch (Exception ex)
                 {
@@ -791,7 +802,7 @@ namespace WmcSx
                 }
                 else
                 {
-                    Log.Write("Video: server doesn't offer byte ranges, plain streaming");
+                    Log.Write("Video: streaming " + url.Substring(url.LastIndexOf('/') + 1));
                     source = MediaSource.CreateFromUri(new Uri(url));
                 }
             }
@@ -810,6 +821,30 @@ namespace WmcSx
             video.Source = item;
             if (old != null && old != range) old.Dispose();
             video.Play();
+        }
+
+        private static void LogTracks(MediaPlaybackItem item)
+        {
+            try
+            {
+                if (item == null) return;
+                var sb = new System.Text.StringBuilder("Video tracks:");
+                foreach (var t in item.VideoTracks)
+                {
+                    var p = t.GetEncodingProperties();
+                    sb.Append(" video " + p.Subtype + " " + p.Width + "x" + p.Height + " " + (p.Bitrate / 1000) + " kbps;");
+                }
+                foreach (var t in item.AudioTracks)
+                {
+                    var p = t.GetEncodingProperties();
+                    sb.Append(" audio " + p.Subtype + " " + p.SampleRate + " Hz " + p.ChannelCount + " ch " + p.BitsPerSample + "-bit;");
+                }
+                Log.Write(sb.ToString());
+            }
+            catch (Exception ex)
+            {
+                Log.Write("Video tracks: couldn't read, " + ex.Message);
+            }
         }
 
         private static string VideoMimeFromUrl(string url)

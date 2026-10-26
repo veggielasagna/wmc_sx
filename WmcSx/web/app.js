@@ -71,9 +71,10 @@
   function mediaUrl(u, size) {
     if (!u) return '';
     if (u.indexOf('usbthumb:') === 0) return native ? 'https://media.wmcsx/usbthumb?p=' + encodeURIComponent(u.slice(9)) : '';
-    if (u.indexOf('usb:') === 0) return native ? (size ? 'https://media.wmcsx/usbthumb?p=' : 'https://media.wmcsx/usbfile?p=') + encodeURIComponent(u.slice(4)) : '';
+    if (u.indexOf('usb:') === 0) return native ? (size ? 'https://media.wmcsx/usbthumb?p=' : 'https://full.wmcsx/usbfile?p=') + encodeURIComponent(u.slice(4)) : '';
     if (!native) return u;
-    return 'https://media.wmcsx/img?u=' + encodeURIComponent(u) + (size ? '&s=' + size : '');
+    // Full-size pictures use their own address so they never queue behind tiles.
+    return (size ? 'https://media.wmcsx/img?u=' : 'https://full.wmcsx/img?u=') + encodeURIComponent(u) + (size ? '&s=' + size : '');
   }
   const GRADS = ['#5FB4FF,#0F4FB8', '#7FE3D0,#127A8C', '#9AA8FF,#3A3FB0', '#FFC48A,#C25A14', '#8FE07A,#2C7A26', '#7CCBFF,#1E5FA8', '#C3A6FF,#5B37B0', '#6FD6F0,#0E6D90', '#FFB0C4,#B03A62', '#A8D8FF,#2B6CC4'];
   function hash(s) { let h = 0; s = String(s || ''); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
@@ -1431,7 +1432,7 @@
 
   /* ================================================================ Photo viewer */
   const Viewer = {
-    open: false, list: [], i: 0, timer: 0, front: 'A', infoTimer: 0,
+    open: false, list: [], i: 0, timer: 0, front: 'A', infoTimer: 0, token: 0,
     show(list, i) {
       this.list = list; this.i = Math.max(0, i); this.open = true;
       $('#viewer').classList.remove('hidden');
@@ -1443,18 +1444,32 @@
       if (!it) return;
       const next = this.front === 'A' ? 'B' : 'A';
       const img = $('#viewer' + next), old = $('#viewer' + this.front);
-      // Try the full photo (or the server's JPEG version of a HEIC), then the small preview, then say so.
+      // Show the small tile picture right away (already saved on the console), then swap in the
+      // full photo when it's ready. Tries the server's JPEG copy, then the original, then the preview.
       const tries = [it.view, it.url, it.thumb].filter((u, k, arr) => u && arr.indexOf(u) === k);
+      const tile = it.thumb || it.view || it.art || it.url;
+      const token = ++this.token;
       const shown = () => { $('#viewerMsg').classList.add('hidden'); img.classList.add('show'); old.classList.remove('show'); };
+      $('#viewerMsg').classList.add('hidden');
       img.onload = shown;
-      img.onerror = () => {
-        tries.shift();
-        if (tries.length) { img.src = mediaUrl(tries[0]) || tries[0]; return; }
-        img.removeAttribute('src');
-        old.classList.remove('show');
-        $('#viewerMsg').classList.remove('hidden');
+      img.onerror = null;
+      if (tile) img.src = mediaUrl(tile, ART_SIZE) || tile;
+      const loadFull = () => {
+        if (token !== this.token) return;
+        if (!tries.length) {
+          if (!img.getAttribute('src') || !img.complete || !img.naturalWidth) {
+            img.removeAttribute('src'); old.classList.remove('show');
+            $('#viewerMsg').classList.remove('hidden');
+          }
+          return;
+        }
+        const u = tries.shift();
+        const full = new Image();
+        full.onload = () => { if (token === this.token) { img.onload = shown; img.src = full.src; } };
+        full.onerror = loadFull;
+        full.src = mediaUrl(u) || u;
       };
-      if (tries.length) img.src = mediaUrl(tries[0]) || tries[0]; else img.onerror();
+      loadFull();
       this.front = next;
       if (first) old.classList.remove('show');
       const info = $('#viewerInfo');
@@ -1477,7 +1492,7 @@
     },
     close() {
       clearInterval(this.timer); this.timer = 0;
-      this.open = false;
+      this.open = false; this.token++;
       $('#viewer').classList.add('hidden');
       $('#viewerA').classList.remove('show'); $('#viewerB').classList.remove('show');
       $('#viewerA').removeAttribute('src'); $('#viewerB').removeAttribute('src');
