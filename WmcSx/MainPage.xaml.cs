@@ -70,6 +70,20 @@ namespace WmcSx
                 Log.Write("MainPage: music player ready");
 
                 VideoView.SetMediaPlayer(video);
+                try
+                {
+                    // On-screen skip buttons (back 10 s, ahead 30 s) as well as LT/RT and LB/RB.
+                    var tc = VideoView.TransportControls;
+                    tc.IsSkipBackwardButtonVisible = true;
+                    tc.IsSkipBackwardEnabled = true;
+                    tc.IsSkipForwardButtonVisible = true;
+                    tc.IsSkipForwardEnabled = true;
+                    tc.IsCompact = false;
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("TransportControls", ex);
+                }
                 video.MediaOpened += (s, e) =>
                 {
                     if (videoStart > 5) s.PlaybackSession.Position = TimeSpan.FromSeconds(videoStart);
@@ -572,10 +586,44 @@ namespace WmcSx
 
         private void OnPreviewKeyDown(object sender, KeyRoutedEventArgs e)
         {
-            if (videoOpen && (e.Key == VirtualKey.GamepadB || e.Key == VirtualKey.Escape))
+            if (!videoOpen) return;
+            switch (e.Key)
             {
-                CloseVideo(false);
-                e.Handled = true;
+                case VirtualKey.GamepadB:
+                case VirtualKey.Escape:
+                    CloseVideo(false);
+                    e.Handled = true;
+                    break;
+                case VirtualKey.GamepadLeftTrigger:
+                case VirtualKey.GamepadLeftShoulder:
+                case VirtualKey.PageUp:
+                    SkipVideo(-10);
+                    e.Handled = true;
+                    break;
+                case VirtualKey.GamepadRightTrigger:
+                case VirtualKey.GamepadRightShoulder:
+                case VirtualKey.PageDown:
+                    SkipVideo(30);
+                    e.Handled = true;
+                    break;
+            }
+        }
+
+        private void SkipVideo(double seconds)
+        {
+            try
+            {
+                var session = video.PlaybackSession;
+                if (!session.CanSeek) return;
+                double dur = session.NaturalDuration.TotalSeconds;
+                double to = Math.Max(0, session.Position.TotalSeconds + seconds);
+                if (dur > 0) to = Math.Min(to, Math.Max(0, dur - 1));
+                session.Position = TimeSpan.FromSeconds(to);
+                try { VideoView.TransportControls.Show(); } catch { }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("SkipVideo", ex);
             }
         }
 
