@@ -44,6 +44,29 @@ namespace WmcSx
             }
             EnteredBackground += OnEnteredBackground;
             LeavingBackground += OnLeavingBackground;
+            Suspending += (s, e) => Log.Write("App: suspending, " + MainPage.MemoryText());
+            Resuming += (s, e) => Log.Write("App: resuming");
+
+            try
+            {
+                // The system warns before it lowers our memory limit (for example when a game
+                // starts). Get under the new limit right away so the music isn't stopped.
+                Windows.System.MemoryManager.AppMemoryUsageLimitChanging += (s, e) =>
+                {
+                    Log.Write("Memory limit changing: " + (e.OldLimit / 1048576) + " MB -> " + (e.NewLimit / 1048576) + " MB, " + MainPage.MemoryText());
+                    if (Windows.System.MemoryManager.AppMemoryUsage >= e.NewLimit * 0.8 && MainPage.Current != null)
+                    {
+                        var page = MainPage.Current;
+                        var ignored = page.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.High, () => page.ReduceMemory("limit lowering"));
+                    }
+                };
+                Windows.System.MemoryManager.AppMemoryUsageIncreased += (s, e) =>
+                    Log.Write("Memory usage level now " + Windows.System.MemoryManager.AppMemoryUsageLevel + ", " + MainPage.MemoryText());
+            }
+            catch (Exception ex)
+            {
+                Log.Error("memory events", ex);
+            }
         }
 
         private void OnUnhandledException(object sender, Windows.UI.Xaml.UnhandledExceptionEventArgs e)

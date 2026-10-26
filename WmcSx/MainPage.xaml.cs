@@ -563,21 +563,64 @@ namespace WmcSx
             }
         }
 
+        public static string MemoryText()
+        {
+            try
+            {
+                return (Windows.System.MemoryManager.AppMemoryUsage / 1048576) + " MB used of " +
+                       (Windows.System.MemoryManager.AppMemoryUsageLimit / 1048576) + " MB allowed";
+            }
+            catch
+            {
+                return "memory unknown";
+            }
+        }
+
+        private bool HasMusic()
+        {
+            var st = player.Music.PlaybackSession.PlaybackState;
+            return player.Music.Source != null && st != MediaPlaybackState.None;
+        }
+
+        /// <summary>Frees everything that isn't needed for background music.</summary>
+        public void ReduceMemory(string why)
+        {
+            if (!inBackground && why == "limit lowering")
+            {
+                // Still on screen: just drop cached artwork.
+                lock (imageCache) { imageCache.Clear(); imageOrder.Clear(); }
+                GC.Collect();
+                Log.Write("Limit lowering while visible, cleared caches: " + MemoryText());
+                return;
+            }
+            Log.Write("Reducing memory (" + why + "): before " + MemoryText());
+            if (videoOpen) CloseVideo(false);
+            TearDownWeb();
+            lock (imageCache)
+            {
+                imageCache.Clear();
+                imageOrder.Clear();
+            }
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Log.Write("Reducing memory: after " + MemoryText());
+        }
+
         public void OnEnteredBackground()
         {
             inBackground = true;
+            Log.Write("Entered background, music=" + HasMusic() + ", " + MemoryText());
             if (videoOpen) CloseVideo(false);
             // Xbox gives background apps very little memory. Drop the interface while
             // music keeps playing; it's rebuilt when you come back.
-            if (player.Music.PlaybackSession.PlaybackState == MediaPlaybackState.Playing)
-            {
-                TearDownWeb();
-            }
+            if (HasMusic()) ReduceMemory("entered background with music");
         }
 
         public async void OnLeavingBackground()
         {
             inBackground = false;
+            Log.Write("Leaving background, " + MemoryText());
             if (web == null) await CreateWebView();
             else PostEvent("player", player.State());
         }
