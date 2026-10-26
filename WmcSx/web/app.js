@@ -1350,7 +1350,7 @@
     return '<div class="panel glass enter d1"><h2>WMC SX</h2><div class="kv">Version <b id="aboutVersion">' + esc(appInfo.version || '1.0') + '</b> · ' + esc(appInfo.device || '') + '</div>' +
       '<div class="kv">Music, videos and photos from your NAS (DLNA) and USB drives. Music keeps playing in the background while you use other apps in Dev Mode.</div></div>' +
       '<div class="panel glass enter d2"><h2>Controller</h2><div class="kv"><b>A</b> select · <b>B</b> back · <b>X</b> play/pause · <b>Y</b> search · <b>LB/RB</b> previous/next song · <b>LT/RT</b> back 10s / ahead 30s · <b>Menu</b> Now Playing · <b>View</b> home</div></div>' +
-      '<div class="panel glass enter d3"><h2>Diagnostics</h2><div class="kv">If something isn’t working, the app’s log shows what happened. ' + (appInfo.memory ? 'Memory: ' + esc(appInfo.memory) + '.' : '') + '</div>' +
+      '<div class="panel glass enter d3"><h2>Diagnostics</h2><div class="kv">If something isn’t working, the app’s log shows what happened, newest first. ' + (appInfo.memory ? 'Memory: ' + esc(appInfo.memory) + '.' : '') + '</div>' +
       '<div class="btn-row"><button class="btn glass f" data-act="showLog" data-k="showLog">' + (logText ? 'Refresh log' : 'Show log') + '</button></div>' +
       (logText ? '<pre class="logbox">' + esc(logText) + '</pre>' : '') + '</div>';
   }
