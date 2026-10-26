@@ -54,10 +54,11 @@ namespace WmcSx
                 Windows.System.MemoryManager.AppMemoryUsageLimitChanging += (s, e) =>
                 {
                     Log.Write("Memory limit changing: " + (e.OldLimit / 1048576) + " MB -> " + (e.NewLimit / 1048576) + " MB, " + MainPage.MemoryText());
-                    if (Windows.System.MemoryManager.AppMemoryUsage >= e.NewLimit * 0.8 && MainPage.Current != null)
+                    if (e.NewLimit < e.OldLimit && MainPage.Current != null)
                     {
                         var page = MainPage.Current;
-                        var ignored = page.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.High, () => page.ReduceMemory("limit lowering"));
+                        ulong newLimit = e.NewLimit;
+                        var ignored = page.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.High, () => page.OnMemoryLimitLowering(newLimit));
                     }
                 };
                 Windows.System.MemoryManager.AppMemoryUsageIncreased += (s, e) =>
@@ -107,13 +108,13 @@ namespace WmcSx
             }
         }
 
-        private void OnEnteredBackground(object sender, EnteredBackgroundEventArgs e)
+        private async void OnEnteredBackground(object sender, EnteredBackgroundEventArgs e)
         {
             var deferral = e.GetDeferral();
             try
             {
                 Log.Write("App: entered background");
-                if (MainPage.Current != null) MainPage.Current.OnEnteredBackground();
+                if (MainPage.Current != null) await MainPage.Current.OnEnteredBackgroundAsync();
             }
             catch (Exception ex)
             {

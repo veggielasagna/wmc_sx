@@ -188,14 +188,23 @@ namespace WmcSx
             web = null;
             try
             {
+                var core = view.CoreWebView2;
+                if (core != null)
+                {
+                    try { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low; } catch (Exception ex) { Log.Error("MemoryUsageTargetLevel", ex); }
+                    try { core.Stop(); } catch { }
+                }
                 WebHost.Children.Clear();
-                var disposable = view as IDisposable;
-                if (disposable != null) disposable.Dispose();
+                // Close() shuts down the browser engine and its processes. (Disposing the
+                // control does nothing on WinUI 2, which is why memory stayed high before.)
+                view.Close();
+                Log.Write("WebView2: closed");
             }
-            catch
+            catch (Exception ex)
             {
+                Log.Error("TearDownWeb", ex);
             }
-            GC.Collect();
+            view = null;
         }
 
         private void ShowStatus(string text)
@@ -583,16 +592,9 @@ namespace WmcSx
         }
 
         /// <summary>Frees everything that isn't needed for background music.</summary>
-        public void ReduceMemory(string why)
+        /// <summary>Frees everything that isn't needed for background music, then waits for the memory to come back.</summary>
+        public async Task ReduceMemoryAsync(string why)
         {
-            if (!inBackground && why == "limit lowering")
-            {
-                // Still on screen: just drop cached artwork.
-                lock (imageCache) { imageCache.Clear(); imageOrder.Clear(); }
-                GC.Collect();
-                Log.Write("Limit lowering while visible, cleared caches: " + MemoryText());
-                return;
-            }
             Log.Write("Reducing memory (" + why + "): before " + MemoryText());
             if (videoOpen) CloseVideo(false);
             TearDownWeb();
@@ -601,20 +603,51 @@ namespace WmcSx
                 imageCache.Clear();
                 imageOrder.Clear();
             }
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-            Log.Write("Reducing memory: after " + MemoryText());
+            // The browser engine's processes take a moment to exit after Close().
+            for (int i = 0; i < 12; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                ulong used = Windows.System.MemoryManager.AppMemoryUsage;
+                ulong limit = Windows.System.MemoryManager.AppMemoryUsageLimit;
+                Log.Write("  after " + (i * 400) + " ms: " + MemoryText());
+                if (used < 100UL * 1048576 && used < limit) break;
+                await Task.Delay(400);
+            }
+            Log.Write("Reducing memory: done, " + MemoryText());
         }
 
-        public void OnEnteredBackground()
+        /// <summary>Called when the system is about to lower the memory limit.</summary>
+        public async void OnMemoryLimitLowering(ulong newLimit)
+        {
+            if (HasMusic() && newLimit < 512UL * 1048576)
+            {
+                // Background music is about to be limited: unload the interface now.
+                await ReduceMemoryAsync("limit lowering");
+                // If it turned out to be brief and we're still on screen, bring the interface back.
+                if (!inBackground && web == null && Windows.System.MemoryManager.AppMemoryUsageLimit >= 512UL * 1048576)
+                {
+                    Log.Write("Limit restored while visible, rebuilding the interface");
+                    await CreateWebView();
+                }
+            }
+            else
+            {
+                lock (imageCache) { imageCache.Clear(); imageOrder.Clear(); }
+                GC.Collect();
+                Log.Write("Limit lowering, cleared caches: " + MemoryText());
+            }
+        }
+
+        public async Task OnEnteredBackgroundAsync()
         {
             inBackground = true;
             Log.Write("Entered background, music=" + HasMusic() + ", " + MemoryText());
             if (videoOpen) CloseVideo(false);
-            // Xbox gives background apps very little memory. Drop the interface while
-            // music keeps playing; it's rebuilt when you come back.
-            if (HasMusic()) ReduceMemory("entered background with music");
+            // Xbox gives background apps very little memory (128 MB). Unload the interface
+            // while music keeps playing; it's rebuilt when you come back.
+            if (HasMusic() && web != null) await ReduceMemoryAsync("entered background with music");
         }
 
         public async void OnLeavingBackground()
