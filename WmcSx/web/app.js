@@ -78,7 +78,8 @@
   function artBg(art, seed) {
     const g = 'linear-gradient(135deg,' + GRADS[hash(seed) % GRADS.length] + ')';
     const u = mediaUrl(art);
-    return u ? 'background-image:url("' + u.replace(/"/g, '%22') + '"),' + g : 'background-image:' + g;
+    // Single quotes: this text goes inside style="..." attributes, where a double quote would end the attribute.
+    return u ? "background-image:url('" + u.replace(/'/g, '%27').replace(/"/g, '%22').replace(/[()\s]/g, c => encodeURIComponent(c)) + "')," + g : 'background-image:' + g;
   }
   function fmtTime(s) {
     s = Math.max(0, Math.floor(s || 0));
