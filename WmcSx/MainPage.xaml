@@ -24,5 +24,14 @@
                             Stretch="Uniform"
                             Background="Black"
                             IsTabStop="True" />
+
+        <Grid x:Name="VideoLoading" Visibility="Collapsed" Background="Black" IsHitTestVisible="False">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <ProgressRing IsActive="True" Width="72" Height="72" Foreground="#F28A1E" />
+                <TextBlock Text="Loading…" Margin="0,24,0,0" FontSize="28" Foreground="White" HorizontalAlignment="Center" />
+                <TextBlock x:Name="VideoLoadingTitle" Margin="0,8,0,0" FontSize="20" Foreground="#A9C8F0" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="900" />
+                <TextBlock Text="Press B to cancel" Margin="0,28,0,0" FontSize="18" Foreground="#7F9FC8" HorizontalAlignment="Center" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Page>

@@ -61,6 +61,7 @@
     <Compile Include="Services\Player.cs" />
     <Compile Include="Services\J.cs" />
     <Compile Include="Services\Log.cs" />
+    <Compile Include="Services\HttpRangeStream.cs" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

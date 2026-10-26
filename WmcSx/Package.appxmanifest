@@ -67,6 +67,8 @@
               <uap:FileType>.gif</uap:FileType>
               <uap:FileType>.bmp</uap:FileType>
               <uap:FileType>.webp</uap:FileType>
+              <uap:FileType>.heic</uap:FileType>
+              <uap:FileType>.heif</uap:FileType>
             </uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>

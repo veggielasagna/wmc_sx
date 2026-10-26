@@ -41,6 +41,10 @@ namespace WmcSx
         private bool videoOpen;
         private string videoKey;
         private double videoStart;
+        private string videoUrl;
+        private string videoTitle;
+        private HttpRangeStream videoRange;
+        private readonly System.Diagnostics.Stopwatch videoClock = new System.Diagnostics.Stopwatch();
         private readonly DispatcherTimer tick = new DispatcherTimer();
 
         private readonly Dictionary<string, Tuple<byte[], string>> imageCache = new Dictionary<string, Tuple<byte[], string>>();
@@ -86,14 +90,25 @@ namespace WmcSx
                 }
                 video.MediaOpened += (s, e) =>
                 {
+                    var r = videoRange;
+                    Log.Write("Video opened in " + videoClock.ElapsedMilliseconds + " ms" +
+                        (r != null ? " (range reading: " + r.Requests + " requests, " + (r.BytesRead / 1024) + " KB read)" : " (plain streaming)"));
                     if (videoStart > 5) s.PlaybackSession.Position = TimeSpan.FromSeconds(videoStart);
+                    RunOnUi(() => VideoLoading.Visibility = Visibility.Collapsed);
                 };
                 video.MediaEnded += (s, e) => RunOnUi(() => CloseVideo(true));
                 video.MediaFailed += (s, e) =>
                 {
-                    Log.Write("Video failed: " + e.Error + " " + e.ErrorMessage);
+                    Log.Write("Video failed: " + e.Error + " " + e.ErrorMessage + (videoRange != null ? " (range reading)" : ""));
                     RunOnUi(() =>
                     {
+                        if (videoOpen && videoRange != null)
+                        {
+                            // Try once more the plain way before giving up.
+                            Log.Write("Video: retrying with plain streaming");
+                            StartVideo(MediaSource.CreateFromUri(new Uri(videoUrl)), null);
+                            return;
+                        }
                         CloseVideo(false);
                         PostEvent("toast", J.S("That video couldn't be played. The format may not be supported."));
                     });
@@ -413,8 +428,17 @@ namespace WmcSx
                     string p;
                     if (query.TryGetValue("p", out p))
                     {
-                        stream = await Usb.Open(p);
-                        type = MimeFromExtension(p);
+                        string ext = Path.GetExtension(p).ToLowerInvariant();
+                        if (ext == ".heic" || ext == ".heif" || ext == ".tif" || ext == ".tiff")
+                        {
+                            var jpeg = await ConvertToJpeg(await Usb.ReadAll(p), 2560);
+                            if (jpeg != null) stream = await ToStream(jpeg);
+                        }
+                        else
+                        {
+                            stream = await Usb.Open(p);
+                            type = MimeFromExtension(p);
+                        }
                     }
                 }
 
@@ -455,14 +479,14 @@ namespace WmcSx
             var resp = await Dlna.Client.GetAsync(url);
             if (!resp.IsSuccessStatusCode) return null;
             var bytes = await resp.Content.ReadAsByteArrayAsync();
-            string type = "image/jpeg";
-            try
+            string type = SniffImageType(bytes);
+            if (type == null)
             {
-                if (resp.Content.Headers.ContentType != null) type = resp.Content.Headers.ContentType.MediaType;
-            }
-            catch
-            {
-                // Unusual header from the server; JPEG is the safe guess for artwork.
+                // Not a format the interface can show (HEIC from iPhones, TIFF…): convert it to JPEG.
+                var jpeg = await ConvertToJpeg(bytes, 2560);
+                if (jpeg == null) return null;
+                bytes = jpeg;
+                type = "image/jpeg";
             }
             var result = Tuple.Create(bytes, type);
 
@@ -483,6 +507,71 @@ namespace WmcSx
                 }
             }
             return result;
+        }
+
+        /// <summary>The image type from the file's first bytes, or null if the interface can't show it.</summary>
+        private static string SniffImageType(byte[] b)
+        {
+            if (b == null || b.Length < 12) return null;
+            if (b[0] == 0xFF && b[1] == 0xD8) return "image/jpeg";
+            if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return "image/png";
+            if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) return "image/gif";
+            if (b[0] == 0x42 && b[1] == 0x4D) return "image/bmp";
+            if (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 && b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) return "image/webp";
+            if (b[0] == 0x3C) return "image/svg+xml";
+            return null;
+        }
+
+        private static bool loggedConvertFailure;
+
+        /// <summary>Decodes any image Windows can read (including HEIC when the system has the codec) to a JPEG no larger than maxSide.</summary>
+        private static async Task<byte[]> ConvertToJpeg(byte[] bytes, uint maxSide)
+        {
+            if (bytes == null || bytes.Length == 0) return null;
+            try
+            {
+                using (var input = await ToStream(bytes))
+                {
+                    var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(input);
+                    uint w = decoder.OrientedPixelWidth, h = decoder.OrientedPixelHeight;
+                    double scale = Math.Min(1.0, (double)maxSide / Math.Max(w, h));
+                    var transform = new Windows.Graphics.Imaging.BitmapTransform
+                    {
+                        ScaledWidth = Math.Max(1u, (uint)(decoder.PixelWidth * scale)),
+                        ScaledHeight = Math.Max(1u, (uint)(decoder.PixelHeight * scale)),
+                        InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Fant
+                    };
+                    var bitmap = await decoder.GetSoftwareBitmapAsync(
+                        Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                        Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
+                        transform,
+                        Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
+                        Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb);
+                    using (var output = new InMemoryRandomAccessStream())
+                    {
+                        var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.JpegEncoderId, output);
+                        encoder.SetSoftwareBitmap(bitmap);
+                        await encoder.FlushAsync();
+                        var result = new byte[output.Size];
+                        output.Seek(0);
+                        using (var reader = new DataReader(output.GetInputStreamAt(0)))
+                        {
+                            await reader.LoadAsync((uint)output.Size);
+                            reader.ReadBytes(result);
+                        }
+                        return result;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!loggedConvertFailure)
+                {
+                    loggedConvertFailure = true;
+                    Log.Write("Image conversion failed (codec missing?): " + ex.Message);
+                }
+                return null;
+            }
         }
 
         private static async Task<IRandomAccessStream> ToStream(byte[] bytes)
@@ -530,26 +619,81 @@ namespace WmcSx
         private async Task OpenVideo(JsonObject a)
         {
             string url = J.Str(a, "url", "");
+            videoUrl = url;
             videoKey = J.Str(a, "key", url);
             videoStart = J.Num(a, "start", 0);
+            videoTitle = J.Str(a, "title", "");
+            videoClock.Restart();
+
+            player.Pause();
+            videoOpen = true;
+            VideoLoadingTitle.Text = videoTitle;
+            VideoLoading.Visibility = Visibility.Visible;
+            VideoView.Visibility = Visibility.Visible;
+            if (web != null) web.Visibility = Visibility.Collapsed;
+            VideoView.Focus(FocusState.Programmatic);
 
             MediaSource source;
-            if (url.StartsWith("usb:")) source = MediaSource.CreateFromStorageFile(await Usb.GetFile(url.Substring(4)));
-            else source = MediaSource.CreateFromUri(new Uri(url));
+            HttpRangeStream range = null;
+            if (url.StartsWith("usb:"))
+            {
+                source = MediaSource.CreateFromStorageFile(await Usb.GetFile(url.Substring(4)));
+            }
+            else
+            {
+                try
+                {
+                    range = await HttpRangeStream.TryOpen(new Uri(url), TimeSpan.FromSeconds(6));
+                }
+                catch (Exception ex)
+                {
+                    Log.Write("Video: range check failed, " + ex.Message);
+                }
+                if (!videoOpen || videoUrl != url)
+                {
+                    // Closed (or another video picked) while checking.
+                    if (range != null) range.Dispose();
+                    return;
+                }
+                if (range != null)
+                {
+                    string type = range.ContentType;
+                    if (string.IsNullOrEmpty(type) || !type.StartsWith("video/")) type = VideoMimeFromUrl(url);
+                    Log.Write("Video: range reading, " + (range.Size / 1048576) + " MB, " + type + ", checked in " + videoClock.ElapsedMilliseconds + " ms");
+                    source = MediaSource.CreateFromStream(range, type);
+                }
+                else
+                {
+                    Log.Write("Video: server doesn't offer byte ranges, plain streaming");
+                    source = MediaSource.CreateFromUri(new Uri(url));
+                }
+            }
+            StartVideo(source, range);
+        }
 
+        private void StartVideo(MediaSource source, HttpRangeStream range)
+        {
+            var old = videoRange;
+            videoRange = range;
             var item = new MediaPlaybackItem(source);
             var props = item.GetDisplayProperties();
             props.Type = Windows.Media.MediaPlaybackType.Video;
-            props.VideoProperties.Title = J.Str(a, "title", "");
+            props.VideoProperties.Title = videoTitle ?? "";
             item.ApplyDisplayProperties(props);
-
-            player.Pause();
             video.Source = item;
-            videoOpen = true;
-            VideoView.Visibility = Visibility.Visible;
-            if (web != null) web.Visibility = Visibility.Collapsed;
+            if (old != null && old != range) old.Dispose();
             video.Play();
-            VideoView.Focus(FocusState.Programmatic);
+        }
+
+        private static string VideoMimeFromUrl(string url)
+        {
+            string u = url.ToLowerInvariant();
+            if (u.Contains(".mov")) return "video/quicktime";
+            if (u.Contains(".mkv")) return "video/x-matroska";
+            if (u.Contains(".avi")) return "video/x-msvideo";
+            if (u.Contains(".wmv")) return "video/x-ms-wmv";
+            if (u.Contains(".ts")) return "video/mp2t";
+            return "video/mp4";
         }
 
         private void CloseVideo(bool ended)
@@ -560,6 +704,12 @@ namespace WmcSx
             double dur = video.PlaybackSession.NaturalDuration.TotalSeconds;
             video.Pause();
             video.Source = null;
+            if (videoRange != null)
+            {
+                videoRange.Dispose();
+                videoRange = null;
+            }
+            VideoLoading.Visibility = Visibility.Collapsed;
             VideoView.Visibility = Visibility.Collapsed;
             if (web != null)
             {

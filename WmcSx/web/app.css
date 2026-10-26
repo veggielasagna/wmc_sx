@@ -208,6 +208,9 @@ body.at-home #clock { display: none; }
 .vimg.show { opacity: 1; }
 .vinfo { position: absolute; left: 60px; bottom: 44px; padding: 14px 24px; border-radius: 18px; font-size: 22px; background: rgba(4,20,70,.6); border: 1px solid rgba(170,215,255,.35); transition: opacity .4s ease; }
 .vinfo.gone { opacity: 0; }
+.vmsg { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); max-width: 760px; padding: 32px 40px; border-radius: 24px; text-align: center; background: rgba(4,20,70,.72); border: 1px solid rgba(170,215,255,.35); display: flex; flex-direction: column; gap: 12px; font-size: 22px; color: #CFE3FF; }
+.vmsg b { font-size: 30px; color: #fff; font-weight: 600; }
+.vmsg.hidden { display: none; }
 
 /* ---------- Toast ---------- */
 .toast { position: absolute; left: 50%; top: 150px; transform: translateX(-50%); padding: 16px 30px; border-radius: 22px; font-size: 22px; font-weight: 600; z-index: 30; max-width: 1100px; text-align: center; transition: opacity .3s ease; background: linear-gradient(180deg, rgba(40,110,210,.92), rgba(8,40,120,.95)); border: 1.5px solid rgba(170,215,255,.6); box-shadow: 0 12px 30px rgba(0,8,40,.5); }

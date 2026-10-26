@@ -324,6 +324,7 @@ namespace WmcSx.Services
 
                     XElement main = null, thumb = null;
                     string mainMime = null;
+                    var full = new List<XElement>();
                     foreach (var r in el.Elements().Where(x => x.Name.LocalName == "res"))
                     {
                         string pi = (string)r.Attribute("protocolInfo") ?? "";
@@ -334,6 +335,7 @@ namespace WmcSx.Services
                             if (thumb == null) thumb = r;
                             continue;
                         }
+                        full.Add(r);
                         if (main == null)
                         {
                             main = r;
@@ -345,10 +347,47 @@ namespace WmcSx.Services
                     {
                         o["url"] = J.S(main.Value.Trim());
                         J.Set(o, "mime", mainMime);
+                        J.Set(o, "pi", (string)main.Attribute("protocolInfo"));
                         double dur = ParseDuration((string)main.Attribute("duration"));
                         if (dur > 0) o["duration"] = J.N(dur);
                         J.Set(o, "resolution", (string)main.Attribute("resolution"));
+                        J.Set(o, "size", (string)main.Attribute("size"));
                     }
+
+                    // Photos the interface can't show (HEIC from iPhones, TIFF, RAW): use the largest
+                    // JPEG or PNG version the server also offers, if any.
+                    if (kind == "image" && main != null && !WebSafeImage(mainMime))
+                    {
+                        XElement best = null;
+                        long bestPx = -1;
+                        foreach (var r in el.Elements().Where(x => x.Name.LocalName == "res"))
+                        {
+                            if (!WebSafeImage(MimeOf((string)r.Attribute("protocolInfo") ?? ""))) continue;
+                            long px = Pixels((string)r.Attribute("resolution"));
+                            if (px > bestPx)
+                            {
+                                best = r;
+                                bestPx = px;
+                            }
+                        }
+                        if (best != null) o["view"] = J.S(best.Value.Trim());
+                        if (!loggedImageRes)
+                        {
+                            loggedImageRes = true;
+                            var sb = new System.Text.StringBuilder("DLNA: photo in " + mainMime + " offers:");
+                            foreach (var r in el.Elements().Where(x => x.Name.LocalName == "res"))
+                                sb.Append(" [" + (string)r.Attribute("protocolInfo") + " " + (string)r.Attribute("resolution") + "]");
+                            Log.Write(sb.ToString());
+                        }
+                    }
+
+                    // Videos: if the server offers an MP4 version next to the original, prefer it.
+                    if (kind == "video" && main != null && mainMime != "video/mp4")
+                    {
+                        var mp4 = full.FirstOrDefault(r => MimeOf((string)r.Attribute("protocolInfo") ?? "") == "video/mp4");
+                        if (mp4 != null) o["url"] = J.S(mp4.Value.Trim());
+                    }
+
                     if (art == null && thumb != null) art = thumb.Value.Trim();
                     if (thumb != null) o["thumb"] = J.S(thumb.Value.Trim());
                 }
@@ -356,6 +395,24 @@ namespace WmcSx.Services
                 list.Add(o);
             }
             return list;
+        }
+
+        private static bool loggedImageRes;
+
+        public static bool WebSafeImage(string mime)
+        {
+            mime = (mime ?? "").ToLowerInvariant();
+            return mime == "image/jpeg" || mime == "image/jpg" || mime == "image/png" || mime == "image/gif" || mime == "image/bmp" || mime == "image/webp";
+        }
+
+        private static long Pixels(string resolution)
+        {
+            // "4032x3024"
+            if (string.IsNullOrEmpty(resolution)) return 0;
+            var p = resolution.ToLowerInvariant().Split('x');
+            long w, h;
+            if (p.Length == 2 && long.TryParse(p[0], out w) && long.TryParse(p[1], out h)) return w * h;
+            return 0;
         }
 
         private static string Child(XElement el, string localName)

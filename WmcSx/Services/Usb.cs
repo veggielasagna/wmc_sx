@@ -15,7 +15,7 @@ namespace WmcSx.Services
     {
         public static readonly string[] AudioTypes = { ".mp3", ".m4a", ".aac", ".flac", ".wav", ".wma", ".ogg", ".opus" };
         public static readonly string[] VideoTypes = { ".mp4", ".m4v", ".mkv", ".avi", ".wmv", ".mov", ".ts", ".webm" };
-        public static readonly string[] ImageTypes = { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp" };
+        public static readonly string[] ImageTypes = { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif" };
 
         private static readonly Dictionary<string, IStorageItem> cache = new Dictionary<string, IStorageItem>(StringComparer.OrdinalIgnoreCase);
 
@@ -173,6 +173,15 @@ namespace WmcSx.Services
         {
             var file = await GetFile(path);
             return await file.OpenReadAsync();
+        }
+
+        public static async Task<byte[]> ReadAll(string path)
+        {
+            var file = await GetFile(path);
+            var buffer = await FileIO.ReadBufferAsync(file);
+            var bytes = new byte[buffer.Length];
+            using (var reader = DataReader.FromBuffer(buffer)) reader.ReadBytes(bytes);
+            return bytes;
         }
     }
 }

@@ -1044,7 +1044,7 @@
           cols: kind === 'video' ? 6 : 5,
           item: (x, i) => x.folder ? card(x, i, { cls: kind === 'video' ? 'poster' : 'photo', icon: x.folder.drive ? 'usb' : 'folder', seed: x.folder.title, t1: x.folder.title, t2: x.folder.childCount != null ? x.folder.childCount + ' items' : 'Folder', art: '' })
             : kind === 'video' ? videoCard({ title: x.title, art: x.art || x.thumb, duration: x.duration, url: x.url }, i)
-              : card(x, i, { cls: 'photo', art: x.thumb || x.art || x.url, seed: x.title, icon: 'photo', t1: x.title }),
+              : card(x, i, { cls: 'photo', art: x.thumb || x.view || x.art || x.url, seed: x.title, icon: 'photo', t1: x.title }),
           open: (x, i) => {
             if (x.folder) return openFolder(x.folder);
             if (kind === 'video') return playVideo({ title: x.title, url: x.url, art: x.art || x.thumb });
@@ -1440,9 +1440,18 @@
       if (!it) return;
       const next = this.front === 'A' ? 'B' : 'A';
       const img = $('#viewer' + next), old = $('#viewer' + this.front);
-      img.onload = () => { img.classList.add('show'); old.classList.remove('show'); };
-      img.onerror = () => { img.classList.add('show'); old.classList.remove('show'); };
-      img.src = mediaUrl(it.url) || it.url;
+      // Try the full photo (or the server's JPEG version of a HEIC), then the small preview, then say so.
+      const tries = [it.view, it.url, it.thumb].filter((u, k, arr) => u && arr.indexOf(u) === k);
+      const shown = () => { $('#viewerMsg').classList.add('hidden'); img.classList.add('show'); old.classList.remove('show'); };
+      img.onload = shown;
+      img.onerror = () => {
+        tries.shift();
+        if (tries.length) { img.src = mediaUrl(tries[0]) || tries[0]; return; }
+        img.removeAttribute('src');
+        old.classList.remove('show');
+        $('#viewerMsg').classList.remove('hidden');
+      };
+      if (tries.length) img.src = mediaUrl(tries[0]) || tries[0]; else img.onerror();
       this.front = next;
       if (first) old.classList.remove('show');
       const info = $('#viewerInfo');
@@ -1451,7 +1460,7 @@
       clearTimeout(this.infoTimer);
       this.infoTimer = setTimeout(() => info.classList.add('gone'), 3000);
       const pre = this.list[this.i + 1];
-      if (pre) { const p = new Image(); p.src = mediaUrl(pre.url) || pre.url; }
+      if (pre) { const pu = pre.view || pre.url; const p = new Image(); p.src = mediaUrl(pu) || pu; }
     },
     step(d) {
       if (!this.list.length) return;
@@ -1469,6 +1478,7 @@
       $('#viewer').classList.add('hidden');
       $('#viewerA').classList.remove('show'); $('#viewerB').classList.remove('show');
       $('#viewerA').removeAttribute('src'); $('#viewerB').removeAttribute('src');
+      $('#viewerMsg').classList.add('hidden');
       Sfx.play('back');
     }
   };
