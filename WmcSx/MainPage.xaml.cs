@@ -89,6 +89,13 @@ namespace WmcSx
 
                 SystemNavigationManager.GetForCurrentView().BackRequested += OnBackRequested;
                 PreviewKeyDown += OnPreviewKeyDown;
+                // Tell the interface when the guide or another app is on top, so controller
+                // presses meant for them aren't acted on here.
+                Window.Current.Activated += (s, e) =>
+                {
+                    bool active = e.WindowActivationState != CoreWindowActivationState.Deactivated;
+                    PostEvent("active", J.B(active));
+                };
             }
             catch (Exception ex)
             {

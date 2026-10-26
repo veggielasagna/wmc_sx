@@ -838,10 +838,19 @@
     211: 'up', 212: 'down', 213: 'right', 214: 'left'
   };
   let padKeys = false;
+  // False while the Xbox guide or another app is in front of WMC SX.
+  let appActive = true;
+  const isActive = () => appActive && document.visibilityState !== 'hidden';
+  Bridge.on('active', on => {
+    appActive = !!on;
+    // Forget any buttons that were held while we weren't in front.
+    pad.held = {}; pad.next = {}; pad.ignoreUntilRelease = true;
+  });
   let lastPoll = { action: null, t: 0 };
   let lastBackAt = 0;
 
   document.addEventListener('keydown', e => {
+    if (!isActive()) return;
     const code = e.keyCode;
     if (code >= 195 && code <= 218) padKeys = true;
     const input = document.activeElement && document.activeElement.tagName === 'INPUT' ? document.activeElement : null;
@@ -905,6 +914,7 @@
   }
 
   Bridge.on('back', () => {
+    if (!isActive()) return;
     if (Date.now() - lastBackAt < 400) return;
     back();
   });
@@ -914,7 +924,8 @@
   const PADMAP = { 0: 'a', 1: 'b', 2: 'x', 3: 'y', 4: 'lb', 5: 'rb', 6: 'lt', 7: 'rt', 8: 'view', 9: 'menu', 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
   const REPEATS = { up: 1, down: 1, left: 1, right: 1 };
   function pollPads(now) {
-    if (!padKeys && navigator.getGamepads) {
+    if (!isActive()) { pad.held = {}; pad.ignoreUntilRelease = true; }
+    else if (!padKeys && navigator.getGamepads) {
       const pads = navigator.getGamepads();
       const active = {};
       for (let p = 0; p < pads.length; p++) {
@@ -924,6 +935,11 @@
         const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
         if (ax < -0.6) active.left = true; else if (ax > 0.6) active.right = true;
         if (ay < -0.6) active.up = true; else if (ay > 0.6) active.down = true;
+      }
+      if (pad.ignoreUntilRelease) {
+        // Buttons still held from the guide or another app count as already handled.
+        Object.keys(active).forEach(a => { pad.held[a] = true; pad.next[a] = Infinity; });
+        pad.ignoreUntilRelease = false;
       }
       Object.keys(active).forEach(a => {
         if (!pad.held[a]) {
