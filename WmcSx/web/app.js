@@ -79,12 +79,55 @@
   const GRADS = ['#5FB4FF,#0F4FB8', '#7FE3D0,#127A8C', '#9AA8FF,#3A3FB0', '#FFC48A,#C25A14', '#8FE07A,#2C7A26', '#7CCBFF,#1E5FA8', '#C3A6FF,#5B37B0', '#6FD6F0,#0E6D90', '#FFB0C4,#B03A62', '#A8D8FF,#2B6CC4'];
   function hash(s) { let h = 0; s = String(s || ''); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
   const ART_SIZE = 480;
+  const gradOf = seed => 'linear-gradient(135deg,' + GRADS[hash(seed) % GRADS.length] + ')';
   function artBg(art, seed) {
-    const g = 'linear-gradient(135deg,' + GRADS[hash(seed) % GRADS.length] + ')';
+    const g = gradOf(seed);
     const u = mediaUrl(art, ART_SIZE);
     // Single quotes: this text goes inside style="..." attributes, where a double quote would end the attribute.
     return u ? "background-image:url('" + u.replace(/'/g, '%27').replace(/"/g, '%22').replace(/[()\s]/g, c => encodeURIComponent(c)) + "')," + g : 'background-image:' + g;
   }
+  // Grids and lists can hold thousands of pictures, and every picture on the page stays decoded
+  // in memory. A big photo folder used to run the console out of memory while scrolling.
+  // lazyArt() draws only the colour gradient; watchArt() puts the picture in when the item comes
+  // near the visible part of its list and takes it out again once it's scrolled far away.
+  function lazyArt(art, seed) {
+    const g = gradOf(seed), u = mediaUrl(art, ART_SIZE);
+    return 'style="background-image:' + g + '"' + (u ? ' data-art="' + esc(u) + '" data-g="' + g + '"' : '');
+  }
+  const ART_MARGIN = '700px 0px';
+  const artWatchers = new Map(); // scroll box (or null for the page) -> { io, els }
+  function artObserver(box) {
+    let w = artWatchers.get(box);
+    if (w) return w;
+    const io = new IntersectionObserver(entries => entries.forEach(e => {
+      const el = e.target;
+      if (e.isIntersecting) {
+        if (!el._artOn) { el._artOn = true; el.style.backgroundImage = 'url("' + el.dataset.art.replace(/"/g, '%22') + '"),' + el.dataset.g; }
+      } else if (el._artOn) {
+        el._artOn = false; el.style.backgroundImage = el.dataset.g;
+      }
+    }), { root: box, rootMargin: ART_MARGIN });
+    w = { io: io, els: new Set() };
+    artWatchers.set(box, w);
+    return w;
+  }
+  let artScan = 0;
+  function watchArt() {
+    artScan = 0;
+    // Stop watching pictures that left the screen, and scroll boxes that are gone.
+    artWatchers.forEach((w, box) => {
+      w.els.forEach(el => { if (!el.isConnected) { w.io.unobserve(el); w.els.delete(el); } });
+      if (box && !box.isConnected) { w.io.disconnect(); artWatchers.delete(box); }
+    });
+    document.querySelectorAll('[data-art]:not([data-aw])').forEach(el => {
+      el.setAttribute('data-aw', '');
+      const w = artObserver(el.closest('.content'));
+      w.io.observe(el); w.els.add(el);
+    });
+  }
+  new MutationObserver(() => { if (!artScan) artScan = requestAnimationFrame(watchArt); })
+    .observe(document.documentElement, { childList: true, subtree: true });
+
   function fmtTime(s) {
     s = Math.max(0, Math.floor(s || 0));
     const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
@@ -583,14 +626,14 @@
   function card(it, i, o) {
     o = o || {};
     const icon = o.icon ? ico(o.icon) : '';
-    return '<button class="card f ' + (o.cls || '') + '" data-i="' + i + '"><span class="art" style="' + artBg(o.art, o.seed || o.t1) + '">' + (o.art ? '' : icon) + '</span>' +
+    return '<button class="card f ' + (o.cls || '') + '" data-i="' + i + '"><span class="art" ' + lazyArt(o.art, o.seed || o.t1) + '>' + (o.art ? '' : icon) + '</span>' +
       '<span class="t1">' + esc(o.t1) + '</span>' + (o.t2 != null ? '<span class="t2">' + esc(o.t2) + '</span>' : '') + (o.bar != null ? '<span class="bar"><i style="width:' + Math.round(o.bar * 100) + '%"></i></span>' : '') + '</button>';
   }
   function row(it, i, o) {
     o = o || {};
     const playing = P.track && it && it.url && P.track.url === it.url ? ' playing' : '';
     return '<button class="row f' + playing + '" data-i="' + i + '">' + (o.n != null ? '<span class="n">' + esc(o.n) + '</span>' : '') +
-      (o.thumb !== false ? '<span class="thumb" style="' + artBg(o.art, o.seed || o.t1) + '">' + (o.art ? '' : ico(o.icon || 'note', '')) + '</span>' : '') +
+      (o.thumb !== false ? '<span class="thumb" ' + lazyArt(o.art, o.seed || o.t1) + '>' + (o.art ? '' : ico(o.icon || 'note', '')) + '</span>' : '') +
       '<span class="tt"><span class="t1">' + esc(o.t1) + '</span>' + (o.t2 ? '<span class="t2">' + esc(o.t2) + '</span>' : '') + '</span>' +
       (o.dur ? '<span class="dur">' + esc(o.dur) + '</span>' : '') + '</button>';
   }
@@ -797,6 +840,15 @@
       if (again) setFocus(again, { silent: true }); else { restoreFocus(key); return; }
     }
     if (!cur) { restoreFocus(null); return; }
+    // Scrollable boxes (like the log): up/down scroll inside first, then move on at the ends.
+    if (cur.hasAttribute('data-scroll') && (dir === 'up' || dir === 'down')) {
+      const max = cur.scrollHeight - cur.clientHeight;
+      if (dir === 'down' ? cur.scrollTop < max - 1 : cur.scrollTop > 0) {
+        cur.scrollBy({ top: (dir === 'down' ? 1 : -1) * Math.round(cur.clientHeight * 0.6), behavior: 'smooth' });
+        cur.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        return;
+      }
+    }
     const c = cur.closest('[data-coll]');
     if (c && Colls[c.dataset.coll]) {
       const id = c.dataset.coll, info = Colls[id], cols = +c.dataset.cols, i = +cur.dataset.i, n = info.items.length;
@@ -1352,7 +1404,7 @@
       '<div class="panel glass enter d2"><h2>Controller</h2><div class="kv"><b>A</b> select · <b>B</b> back · <b>X</b> play/pause · <b>Y</b> search · <b>LB/RB</b> previous/next song · <b>LT/RT</b> back 10s / ahead 30s · <b>Menu</b> Now Playing · <b>View</b> home</div></div>' +
       '<div class="panel glass enter d3"><h2>Diagnostics</h2><div class="kv">If something isn’t working, the app’s log shows what happened, newest first. ' + (appInfo.memory ? 'Memory: ' + esc(appInfo.memory) + '.' : '') + '</div>' +
       '<div class="btn-row"><button class="btn glass f" data-act="showLog" data-k="showLog">' + (logText ? 'Refresh log' : 'Show log') + '</button></div>' +
-      (logText ? '<pre class="logbox">' + esc(logText) + '</pre>' : '') + '</div>';
+      (logText ? '<div class="kv dim">Scroll the log with up and down on the left stick or d-pad.</div><pre class="logbox f" data-k="logbox" data-scroll>' + esc(logText) + '</pre>' : '') + '</div>';
   }
   let discovering = false;
   let appInfo = {};
@@ -1391,7 +1443,10 @@
     useServer: el => { const s = Lib.servers.get(el.dataset.id); if (s && (!Lib.server || Lib.server.id !== s.id)) Lib.select(s, true).then(() => refreshIf(['settings'])); },
     pref: el => { const k = el.dataset.pref; prefs[k] = !prefs[k]; savePrefs(); el.classList.toggle('on', prefs[k]); if (k === 'sound' && prefs.sound) Sfx.play('select'); },
     showLog: () => Promise.all([Bridge.call('readLog', {}), Bridge.call('info', {})])
-      .then(([t, info]) => { logText = t ? String(t).split('\n').reverse().join('\n') : '(empty)'; appInfo = Object.assign(appInfo, info || {}); refreshIf(['settings']); })
+      .then(([t, info]) => { logText = t ? String(t).split('\n').reverse().join('\n') : '(empty)'; appInfo = Object.assign(appInfo, info || {}); refreshIf(['settings']);
+        // Bring the whole log into view and put focus on it, so up/down scroll it right away.
+        const box = $('#screen .logbox');
+        if (box) { box.scrollTop = 0; setFocus(box); } })
       .catch(e => toast('Couldn’t read the log. ' + e.message)),
     clearResume: () => { Resume.clear(); toast('Continue watching cleared'); refreshIf(['settings']); },
     rebuild: () => { if (Lib.server && !Lib.building) { Lib.buildIndex(); refreshIf(['settings']); } },

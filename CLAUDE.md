@@ -40,6 +40,7 @@ Don't put real IP addresses, device or NAS names, or other home-network details 
   - On Xbox, the log is `LocalState\wmcsx_log.txt` (plus `_previous`).
   - In Dev Mode, download it from the Device Portal's file explorer.
   - In retail mode, open it in the app under Settings › About › Show log (newest first). The owner photographs the screen.
+  - The log box takes focus when it opens; up/down scroll inside it (any element with `data-scroll` works this way), and moving past either end leaves it.
 
 ## Xbox lessons learned
 
@@ -50,6 +51,7 @@ Don't put real IP addresses, device or NAS names, or other home-network details 
   - The app converts them with BitmapDecoder. Tiles use the preview embedded inside each photo; full photos are decoded only when there's enough memory.
   - Conversions run at most 2 at a time for tiles and 1 for the full photo.
   - iOS 18 photos (24 MP with an HDR `tmap` gain-map item) are retried with that item hidden if decoding fails.
+- **Tile pictures in big folders:** every picture on the page stays decoded in memory, so a folder with thousands of photos ran the app out of memory while scrolling ("This page is having a problem · Out of Memory", or the app closing). Grid and list items now use `lazyArt()` and `watchArt()` in `app.js`: the picture is only set while the item is within about 700 px of the visible area, and removed again when it scrolls further away. Use `lazyArt` for anything that can repeat in a long list.
 - **Controller input:** ignore it while the app isn't active (the guide or another app is on top). The C# side sends an `active` event.
 - **Thumbnail bug (fixed):** in `style="…"` attributes, background URLs must use single quotes. A double quote ended the attribute and broke every thumbnail.
 

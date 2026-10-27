@@ -103,6 +103,8 @@ window.WmcMock = (function () {
         setTimeout(() => window.WmcBridge.emit('toast', 'Browser preview: the Xbox would play “' + a.title + '” full screen now.'), 50);
         setTimeout(() => emit('videoClosed', { key: a.key, position: 600, duration: 2400, ended: false }), 1500);
         return wait(null);
+      case 'readLog':
+        return wait(Array.from({ length: 120 }, (_, i) => '21:' + String(10 + (i % 50)).padStart(2, '0') + ':00 browser preview log line ' + (i + 1)).join('\n'));
       case 'saveFile': try { localStorage.setItem('mockfile.' + a.name, a.text); } catch (e) { /* ignore */ } return wait(null);
       case 'loadFile': try { return wait(localStorage.getItem('mockfile.' + a.name)); } catch (e) { return wait(null); }
     }
