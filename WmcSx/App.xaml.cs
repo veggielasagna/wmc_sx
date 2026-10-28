@@ -62,7 +62,15 @@ namespace WmcSx
                     }
                 };
                 Windows.System.MemoryManager.AppMemoryUsageIncreased += (s, e) =>
-                    Log.Write("Memory usage level now " + Windows.System.MemoryManager.AppMemoryUsageLevel + ", " + MainPage.MemoryText());
+                {
+                    var level = Windows.System.MemoryManager.AppMemoryUsageLevel;
+                    Log.Write("Memory usage level now " + level + ", " + MainPage.MemoryText());
+                    if (level == Windows.System.AppMemoryUsageLevel.High || level == Windows.System.AppMemoryUsageLevel.OverLimit)
+                    {
+                        var page = MainPage.Current;
+                        if (page != null) { var ignored = page.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.High, () => page.FreeBrowserMemory("memory level " + level)); }
+                    }
+                };
             }
             catch (Exception ex)
             {

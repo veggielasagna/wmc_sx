@@ -127,7 +127,7 @@ body.at-home #clock { display: none; }
 .row { display: flex; align-items: center; gap: 18px; padding: 10px 18px; border-radius: 14px; border: 1.5px solid transparent; background: transparent; cursor: pointer; text-align: left; color: #EEF6FF; min-height: 72px; width: 100%; }
 .row.focus { background: rgba(60,140,240,.22); }
 .row .n { width: 40px; font-size: 20px; color: #9FC2EA; text-align: right; flex-shrink: 0; }
-.row .thumb { width: 52px; height: 52px; border-radius: 8px; border: 1px solid rgba(200,230,255,.5); flex-shrink: 0; background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; }
+.row .thumb { width: 52px; height: 52px; border-radius: 8px; border: 1px solid rgba(200,230,255,.5); flex-shrink: 0; background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .row .thumb svg { width: 28px; height: 28px; fill: none; stroke: rgba(255,255,255,.85); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .row .tt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .row .t1 { font-size: 24px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -276,3 +276,5 @@ body.at-home #clock { display: none; }
 }
 
 .logbox { margin: 4px 0 0; max-height: 520px; overflow: auto; padding: 16px 18px; border-radius: 14px; background: rgba(2,10,40,.65); border: 1px solid rgba(170,215,255,.25); font: 15px/1.45 Consolas, "Cascadia Mono", monospace; color: #CFE3FF; white-space: pre-wrap; word-break: break-word; }
+/* List and grid pictures are drawn into a canvas (see lazyArt in app.js) so their memory can be freed. */
+.art > canvas.pic, .thumb > canvas.pic { width: 100%; height: 100%; display: block; border-radius: inherit; }

@@ -86,26 +86,53 @@
     // Single quotes: this text goes inside style="..." attributes, where a double quote would end the attribute.
     return u ? "background-image:url('" + u.replace(/'/g, '%27').replace(/"/g, '%22').replace(/[()\s]/g, c => encodeURIComponent(c)) + "')," + g : 'background-image:' + g;
   }
-  // Grids and lists can hold thousands of pictures, and every picture on the page stays decoded
-  // in memory. A big photo folder used to run the console out of memory while scrolling.
-  // lazyArt() draws only the colour gradient; watchArt() puts the picture in when the item comes
-  // near the visible part of its list and takes it out again once it's scrolled far away.
+  // Grids and lists can hold thousands of pictures. The browser keeps every picture it has ever
+  // shown (as CSS background or <img>) in its own cache and only lets go when it notices memory is
+  // short, which it never does on Xbox, so scrolling a big photo folder ran the app out of memory.
+  // So list pictures are drawn into a small <canvas> instead: fetched, decoded with
+  // createImageBitmap, drawn, and the decoded copy closed straight away. When the item scrolls far
+  // away the canvas is emptied, which really frees the memory. lazyArt() draws only the colour
+  // gradient; watchArt() adds and removes the pictures as items come near or go far.
   function lazyArt(art, seed) {
     const g = gradOf(seed), u = mediaUrl(art, ART_SIZE);
-    return 'style="background-image:' + g + '"' + (u ? ' data-art="' + esc(u) + '" data-g="' + g + '"' : '');
+    return 'style="background-image:' + g + '"' + (u ? ' data-art="' + esc(u) + '"' : '');
   }
-  const ART_MARGIN = '700px 0px';
+  const ART_MARGIN = '600px 0px';
+  function showArt(el) {
+    if (el._art) return;
+    const job = el._art = { abort: window.AbortController ? new AbortController() : null };
+    fetch(el.dataset.art, job.abort ? { signal: job.abort.signal } : undefined)
+      .then(r => r.ok ? r.blob() : null)
+      .then(b => b ? createImageBitmap(b) : null)
+      .then(bm => {
+        if (!bm) return;
+        if (el._art !== job || !el.isConnected) { bm.close(); return; }
+        const W = Math.max(1, Math.round(el.clientWidth)), H = Math.max(1, Math.round(el.clientHeight));
+        const c = document.createElement('canvas');
+        c.className = 'pic';
+        c.width = W; c.height = H;
+        // Fill the space like background-size: cover.
+        const k = Math.max(W / bm.width, H / bm.height), w = bm.width * k, h = bm.height * k;
+        c.getContext('2d').drawImage(bm, (W - w) / 2, (H - h) / 2, w, h);
+        bm.close();
+        job.canvas = c;
+        el.appendChild(c);
+      })
+      .catch(() => { /* picture not available: the gradient stays */ });
+  }
+  function hideArt(el) {
+    const job = el._art;
+    if (!job) return;
+    el._art = null;
+    if (job.abort) { try { job.abort.abort(); } catch (e) { /* ignore */ } }
+    if (job.canvas) { job.canvas.width = 0; job.canvas.height = 0; job.canvas.remove(); }
+  }
   const artWatchers = new Map(); // scroll box (or null for the page) -> { io, els }
   function artObserver(box) {
     let w = artWatchers.get(box);
     if (w) return w;
     const io = new IntersectionObserver(entries => entries.forEach(e => {
-      const el = e.target;
-      if (e.isIntersecting) {
-        if (!el._artOn) { el._artOn = true; el.style.backgroundImage = 'url("' + el.dataset.art.replace(/"/g, '%22') + '"),' + el.dataset.g; }
-      } else if (el._artOn) {
-        el._artOn = false; el.style.backgroundImage = el.dataset.g;
-      }
+      if (e.isIntersecting) showArt(e.target); else hideArt(e.target);
     }), { root: box, rootMargin: ART_MARGIN });
     w = { io: io, els: new Set() };
     artWatchers.set(box, w);
@@ -116,7 +143,7 @@
     artScan = 0;
     // Stop watching pictures that left the screen, and scroll boxes that are gone.
     artWatchers.forEach((w, box) => {
-      w.els.forEach(el => { if (!el.isConnected) { w.io.unobserve(el); w.els.delete(el); } });
+      w.els.forEach(el => { if (!el.isConnected) { w.io.unobserve(el); w.els.delete(el); hideArt(el); } });
       if (box && !box.isConnected) { w.io.disconnect(); artWatchers.delete(box); }
     });
     document.querySelectorAll('[data-art]:not([data-aw])').forEach(el => {
@@ -1403,12 +1430,29 @@
       '<div class="kv">Music, videos and photos from your NAS (DLNA) and USB drives. Music keeps playing in the background while you use other apps in Dev Mode.</div></div>' +
       '<div class="panel glass enter d2"><h2>Controller</h2><div class="kv"><b>A</b> select · <b>B</b> back · <b>X</b> play/pause · <b>Y</b> search · <b>LB/RB</b> previous/next song · <b>LT/RT</b> back 10s / ahead 30s · <b>Menu</b> Now Playing · <b>View</b> home</div></div>' +
       '<div class="panel glass enter d3"><h2>Diagnostics</h2><div class="kv">If something isn’t working, the app’s log shows what happened, newest first. ' + (appInfo.memory ? 'Memory: ' + esc(appInfo.memory) + '.' : '') + '</div>' +
-      '<div class="btn-row"><button class="btn glass f" data-act="showLog" data-k="showLog">' + (logText ? 'Refresh log' : 'Show log') + '</button></div>' +
+      '<div class="btn-row"><button class="btn glass f" data-act="showLog" data-k="showLog">' + (logText && !logPrev ? 'Refresh log' : 'Show log') + '</button>' +
+      '<button class="btn glass f" data-act="showPrevLog" data-k="showPrevLog">Last time’s log</button></div>' +
+      '<div class="kv dim">After a crash, reopen WMC SX and choose “Last time’s log”: it shows what happened before the app closed.</div>' +
+      (logText ? '<div class="kv"><b>' + (logPrev ? 'Last time’s log' : 'This time’s log') + '</b></div>' : '') +
       (logText ? '<div class="kv dim">Scroll the log with up and down on the left stick or d-pad.</div><pre class="logbox f" data-k="logbox" data-scroll>' + esc(logText) + '</pre>' : '') + '</div>';
   }
   let discovering = false;
   let appInfo = {};
   let logText = '';
+  let logPrev = false;
+  function showLogText(previous) {
+    return Promise.all([Bridge.call('readLog', { previous: previous }), Bridge.call('info', {})])
+      .then(([t, info]) => {
+        logPrev = previous;
+        logText = t ? String(t).split('\n').reverse().join('\n') : '(empty)';
+        appInfo = Object.assign(appInfo, info || {});
+        refreshIf(['settings']);
+        // Bring the whole log into view and put focus on it, so up/down scroll it right away.
+        const box = $('#screen .logbox');
+        if (box) { box.scrollTop = 0; setFocus(box); }
+      })
+      .catch(e => toast('Couldn’t read the log. ' + e.message));
+  }
 
   /* ================================================================ Actions */
   const Actions = {
@@ -1442,12 +1486,8 @@
     },
     useServer: el => { const s = Lib.servers.get(el.dataset.id); if (s && (!Lib.server || Lib.server.id !== s.id)) Lib.select(s, true).then(() => refreshIf(['settings'])); },
     pref: el => { const k = el.dataset.pref; prefs[k] = !prefs[k]; savePrefs(); el.classList.toggle('on', prefs[k]); if (k === 'sound' && prefs.sound) Sfx.play('select'); },
-    showLog: () => Promise.all([Bridge.call('readLog', {}), Bridge.call('info', {})])
-      .then(([t, info]) => { logText = t ? String(t).split('\n').reverse().join('\n') : '(empty)'; appInfo = Object.assign(appInfo, info || {}); refreshIf(['settings']);
-        // Bring the whole log into view and put focus on it, so up/down scroll it right away.
-        const box = $('#screen .logbox');
-        if (box) { box.scrollTop = 0; setFocus(box); } })
-      .catch(e => toast('Couldn’t read the log. ' + e.message)),
+    showLog: () => showLogText(false),
+    showPrevLog: () => showLogText(true),
     clearResume: () => { Resume.clear(); toast('Continue watching cleared'); refreshIf(['settings']); },
     rebuild: () => { if (Lib.server && !Lib.building) { Lib.buildIndex(); refreshIf(['settings']); } },
     noop: () => {}
@@ -1597,9 +1637,16 @@
     // A fresh start (nothing playing) shows the welcome animation and opens on Home.
     // Coming back from background music skips it and returns to where you were.
     const freshStart = !P.track || P.state === 'stopped';
-    if (freshStart) { route = { name: 'home' }; stack = []; }
+    // The app reloads the screen by itself if the browser engine crashed (for example out of
+    // memory). Then go back to where you were, without the welcome animation.
+    const recovered = /[?&]recovered=1/.test(location.search);
+    if (freshStart && !recovered) { route = { name: 'home' }; stack = []; }
     render({});
-    if (freshStart && prefs.intro) Intro.play(); // the NAS connects in the background meanwhile
+    if (freshStart && !recovered && prefs.intro) Intro.play(); // the NAS connects in the background meanwhile
+    if (recovered) {
+      nativeLog('interface reloaded after a crash, back on ' + route.name);
+      setTimeout(() => toast('WMC SX ran low on memory and reloaded this screen.', 5000), 600);
+    }
 
     const saved = Lib.savedServer;
     if (saved && saved.location) {

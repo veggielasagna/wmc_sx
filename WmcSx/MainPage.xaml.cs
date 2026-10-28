@@ -75,6 +75,7 @@ namespace WmcSx
                     {
                         PostEvent("player", player.State());
                     }
+                    CheckMemory();
                 };
                 tick.Start();
                 Log.Write("MainPage: music player ready");
@@ -204,7 +205,7 @@ namespace WmcSx
                 }
 
                 var core = view.CoreWebView2;
-                core.ProcessFailed += (s, e) => Log.Write("WebView2: browser process failed: " + e.ProcessFailedKind);
+                core.ProcessFailed += OnProcessFailed;
                 core.NavigationCompleted += (s, e) => Log.Write("WebView2: page loaded, success=" + e.IsSuccess + " status=" + e.WebErrorStatus);
                 core.Settings.AreDevToolsEnabled = false;
                 core.Settings.AreDefaultContextMenusEnabled = false;
@@ -321,8 +322,11 @@ namespace WmcSx
                     string text = "";
                     try
                     {
-                        var lines = File.ReadAllLines(Log.FilePath);
-                        text = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 80)));
+                        // "previous": the log of the last run, which holds what happened before a crash.
+                        string file = J.Bool(a, "previous") ? Log.FilePath.Replace(".txt", "_previous.txt") : Log.FilePath;
+                        if (!File.Exists(file)) return J.S("(no log from last time)");
+                        var lines = File.ReadAllLines(file);
+                        text = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 150)));
                     }
                     catch (Exception ex)
                     {
@@ -538,9 +542,11 @@ namespace WmcSx
                     if (imageCache.TryGetValue(key, out hit)) return hit;
                 }
 
-                var resp = await Dlna.Client.GetAsync(url);
-                if (!resp.IsSuccessStatusCode) return null;
-                bytes = await resp.Content.ReadAsByteArrayAsync();
+                using (var resp = await Dlna.Client.GetAsync(url))
+                {
+                    if (!resp.IsSuccessStatusCode) return null;
+                    bytes = await resp.Content.ReadAsByteArrayAsync();
+                }
                 type = SniffImageType(bytes);
                 bool convert = type == null;
                 bool shrink = size > 0 && bytes.Length > 80 * 1024 && type != "image/gif" && type != "image/svg+xml";
@@ -564,6 +570,8 @@ namespace WmcSx
             }
 
             var result = Tuple.Create(bytes, type);
+            if (size > 0 && System.Threading.Interlocked.Increment(ref picturesMade) % 100 == 0)
+                Log.Write("Pictures made: " + picturesMade + ", " + MemoryText());
             if (bytes.Length < 600 * 1024) Remember(key, result);
             if (size > 0) SaveThumb(file, bytes);
             return result;
@@ -1075,6 +1083,94 @@ namespace WmcSx
             {
                 Log.Error("SkipVideo", ex);
             }
+        }
+
+        private static int picturesMade;
+
+        // ---------------------------------------------------------------- Browser memory
+
+        // The browser engine keeps pictures and other caches until it thinks memory is short, but on
+        // Xbox it doesn't notice the app's limit, so it can grow until it crashes ("Out of Memory").
+        // When the app gets close to its limit, ask the engine to let go of its caches.
+        private DateTime lastFree = DateTime.MinValue;
+        private bool freeing;
+        private int memoryCheckTicks;
+
+        private void CheckMemory()
+        {
+            if (++memoryCheckTicks % 2 != 0) return;
+            try
+            {
+                ulong limit = MemoryManager.AppMemoryUsageLimit, used = MemoryManager.AppMemoryUsage;
+                if (limit > 0 && used > limit / 100 * 70) FreeBrowserMemory("over 70% of the limit");
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>Asks the browser engine to drop its caches (pictures, scripts) without closing the screen.</summary>
+        public async void FreeBrowserMemory(string why)
+        {
+            if (freeing || inBackground || web == null || web.CoreWebView2 == null) return;
+            if ((DateTime.Now - lastFree).TotalSeconds < 10) return;
+            freeing = true;
+            lastFree = DateTime.Now;
+            try
+            {
+                Log.Write("Freeing browser memory (" + why + "): before " + MemoryText());
+                lock (imageCache) { imageCache.Clear(); imageOrder.Clear(); }
+                GC.Collect();
+                var core = web.CoreWebView2;
+                core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
+                await Task.Delay(1500);
+                if (web != null && web.CoreWebView2 == core) core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
+                Log.Write("Freeing browser memory: after " + MemoryText());
+            }
+            catch (Exception ex)
+            {
+                Log.Error("FreeBrowserMemory", ex);
+            }
+            finally
+            {
+                freeing = false;
+            }
+        }
+
+        private DateTime lastRecover = DateTime.MinValue;
+
+        /// <summary>The screen's browser engine crashed: write down why and load the screen again.</summary>
+        private void OnProcessFailed(CoreWebView2 sender, CoreWebView2ProcessFailedEventArgs e)
+        {
+            string reason = "";
+            try { reason = ", reason " + e.Reason + ", exit code " + e.ExitCode; } catch { }
+            Log.Write("WebView2: browser process failed: " + e.ProcessFailedKind + reason + ", " + MemoryText());
+            var kind = e.ProcessFailedKind;
+            if (kind != CoreWebView2ProcessFailedKind.RenderProcessExited && kind != CoreWebView2ProcessFailedKind.RenderProcessUnresponsive) return;
+            // Reload at most once a minute, so a page that keeps crashing can't loop forever.
+            if ((DateTime.Now - lastRecover).TotalSeconds < 60)
+            {
+                Log.Write("WebView2: crashed again within a minute, not reloading");
+                return;
+            }
+            lastRecover = DateTime.Now;
+            var ignored = Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
+            {
+                try
+                {
+                    lock (imageCache) { imageCache.Clear(); imageOrder.Clear(); }
+                    GC.Collect();
+                    if (web != null && web.CoreWebView2 == sender)
+                    {
+                        Log.Write("WebView2: reloading the screen, " + MemoryText());
+                        sender.Navigate("https://" + AppHost + "/index.html?recovered=1");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("Recover", ex);
+                }
+            });
         }
 
         public static string MemoryText()
