@@ -721,7 +721,8 @@
     else Resume.save(d.key, { position: d.position, duration: d.duration, title: v.title, art: v.art || '', at: Date.now() });
     if (d.switched) return; // moved on to the next video; the player is still open
     // Coming back from the full-screen player: ignore stray direction presses for a moment.
-    settleInput(700, 'video closed');
+    traceFrom = Date.now(); traceUntil = traceFrom + 4000;
+    settleInput(1000, 'video closed');
     refreshIf(['videos']);
   });
 
@@ -893,14 +894,25 @@
     }
     if (!el && preferContent) el = $('#content .f');
     if (!el) el = $('#screen [data-autofocus]') || $('#content .f') || $('#screen .f');
-    if (el) setFocus(el, { silent: true });
+    if (el) setFocus(el, { silent: true, why: 'screen redrawn' });
   }
 
   /* ================================================================ Focus and spatial navigation */
   let cur = null;
+  // After a video closes, every focus change for a few seconds goes to the log with its cause,
+  // so if focus ever jumps again the log says exactly what moved it.
+  let traceUntil = 0, traceFrom = 0, lastInput = { what: '', t: 0 };
+  function traceInput(text) {
+    if (Date.now() < traceUntil) nativeLog('input: ' + text + ', ' + (Date.now() - traceFrom) + ' ms after the video closed');
+  }
+  const focusName = el => !el ? 'nothing' : el.dataset.i != null ? 'item ' + el.dataset.i : (el.dataset.k || el.className.split(' ')[0]);
   function setFocus(el, opts) {
     opts = opts || {};
     if (!el) return;
+    if (el !== cur && Date.now() < traceUntil) {
+      const why = opts.why || (Date.now() - lastInput.t < 60 ? lastInput.what : 'no input');
+      traceInput('focus ' + focusName(cur) + ' -> ' + focusName(el) + ' (' + why + ')');
+    }
     if (cur && cur !== el) cur.classList.remove('focus');
     cur = el;
     el.classList.add('focus');
@@ -1116,6 +1128,7 @@
       return;
     }
     if (!e.repeat) keysDown.add(code);
+    lastInput = { what: 'key ' + code + (e.repeat ? ' repeat' : ''), t: Date.now() };
     if (code >= 195 && code <= 218) padKeys = true;
     const input = document.activeElement && document.activeElement.tagName === 'INPUT' ? document.activeElement : null;
     let action = KEYMAP[code];
@@ -1143,9 +1156,20 @@
   });
 
   // Mouse support (useful on a PC; the Xbox uses the controller).
+  // Only a pointer that really moved picks things. The browser engine also sends "mouse moved"
+  // when the page changes under a pointer that is standing still: for example when the interface
+  // comes back after a video. On Xbox that pointer sits somewhere invisible, so whatever tile was
+  // under it took the focus, which looked like a flick left or right.
+  let lastMouse = null;
   document.addEventListener('mousemove', e => {
+    const p = { x: e.clientX, y: e.clientY }, prev = lastMouse;
+    lastMouse = p;
+    if (!prev || Math.abs(p.x - prev.x) + Math.abs(p.y - prev.y) < 2) return;
     const el = e.target.closest && e.target.closest('#screen .f');
-    if (el && el !== cur) setFocus(el, { noScroll: true, silent: true });
+    if (!el || el === cur) return;
+    if (Date.now() < settleUntil) { traceInput('ignored pointer at ' + Math.round(p.x) + ',' + Math.round(p.y)); return; }
+    lastInput = { what: 'pointer at ' + Math.round(p.x) + ',' + Math.round(p.y), t: Date.now() };
+    setFocus(el, { noScroll: true, silent: true });
   });
   document.addEventListener('click', e => {
     if (Intro.active) { if (Intro.finish) Intro.finish(); return; }
@@ -1216,9 +1240,11 @@
           pad.held[a] = true;
           pad.next[a] = now + 300;
           lastPoll = { action: a, t: Date.now() };
+          lastInput = { what: 'controller ' + a, t: Date.now() };
           handle(a);
         } else if (REPEATS[a] && now >= pad.next[a]) {
           pad.next[a] = now + 85;
+          lastInput = { what: 'controller ' + a + ' held', t: Date.now() };
           handle(a);
         }
       });
@@ -1963,65 +1989,93 @@
     }
   };
 
-  const VIZ_STYLES = ['Kaleidoscope', 'Tunnel', 'Liquid'];
-  const VIZ_FRAG = [
+  const VIZ_STYLES = ['Kaleidoscope', 'Tunnel', 'Liquid', 'Fractal'];
+  // Video feedback (the idea behind Milkdrop): every frame starts from the previous frame, zoomed,
+  // spun, warped and colour-shifted a little, and new shapes are painted on top. What's on screen
+  // is the trail of everything before it, so it swirls, tunnels and melts instead of flashing.
+  const VIZ_COMMON = [
     'precision mediump float;',
-    'uniform vec2 R; uniform float T, bass, mid, high, pulse, wave, mode, hue, travel;',
+    'varying vec2 v;',
+    'uniform vec2 R; uniform float T, bass, mid, high, pulse, mode, hue;',
     'vec3 pal(float t){ return 0.5 + 0.5 * cos(6.28318 * (t + vec3(0.0, 0.18, 0.42))); }',
     'float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }',
     'float n2(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);',
     '  return mix(mix(h(i), h(i + vec2(1.0, 0.0)), f.x), mix(h(i + vec2(0.0, 1.0)), h(i + vec2(1.0, 1.0)), f.x), f.y); }',
-    'float fbm(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { v += a * n2(p); p = p * 2.03 + vec2(1.7, 9.2); a *= 0.5; } return v; }',
-    'void main(){',
-    '  vec2 uv = (gl_FragCoord.xy - 0.5 * R) / R.y;',
-    '  uv *= 1.0 - 0.16 * bass - 0.1 * pulse;',
+    'float fbm(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 4; i++) { v += a * n2(p); p = p * 2.03 + vec2(1.7, 9.2); a *= 0.5; } return v; }',
+    ''
+  ].join('\n');
+  const VIZ_FEED = VIZ_COMMON + [
+    'uniform sampler2D prev;',
+    'uniform float zoom, rot, warp, decay, hueStep, seg, srcAmt;',
+    'vec3 hueRot(vec3 c, float a){ vec3 k = vec3(0.57735); float ca = cos(a), sa = sin(a); return c * ca + cross(k, c) * sa + k * dot(k, c) * (1.0 - ca); }',
+    'vec2 fold(vec2 p, float n){ float s = 6.28318 / n, a = mod(atan(p.y, p.x), s); a = abs(a - s * 0.5); return length(p) * vec2(cos(a), sin(a)); }',
+    'vec3 source(vec2 uv){',
     '  float r = length(uv), a = atan(uv.y, uv.x);',
-    '  vec3 c;',
     '  if (mode < 0.5) {',
-    // Kaleidoscope: an 8-way mirror over swirling, self-warping clouds.
-    '    float k = 8.0, s = 6.28318 / k;',
-    '    float b = mod(a + T * 0.08 + 0.3 * sin(T * 0.13), s); b = abs(b - s * 0.5);',
-    '    vec2 p = r * vec2(cos(b), sin(b)) * (2.2 + mid * 0.6);',
-    '    vec2 q = vec2(fbm(p + T * 0.12), fbm(p - T * 0.1 + 4.0));',
-    '    float f = fbm(p * 1.6 + 2.6 * q + vec2(T * 0.08, -T * 0.05) + bass * 0.6);',
-    '    c = pal(f * 1.6 + hue + r * 0.7 - T * 0.04);',
-    '    c *= 0.35 + 1.1 * f * f + 0.25 * bass;',
-    '    c += pal(hue + 0.5) * pow(max(0.0, 1.0 - abs(f - 0.55) * 9.0), 3.0) * (0.4 + high);',
+    // Kaleidoscope: drifting blobs of colour, folded through the mirrors.
+    '    vec2 p = uv * (3.2 + mid * 2.0);',
+    '    float f = fbm(p + vec2(T * 0.35, -T * 0.27));',
+    '    return pal(f * 2.2 + hue + r * 1.5) * smoothstep(0.56 - 0.1 * bass, 0.74, f);',
     '  } else if (mode < 1.5) {',
-    // Tunnel: flying down a striped, twisting tube.
-    '    float z = 0.42 / (r + 0.03) + travel;',
-    '    float tw = a + 0.35 * sin(z * 0.6 + T * 0.4);',
-    // Noise is read around a circle so there is no seam where the angle wraps.
-    '    vec2 cyl = vec2(cos(tw), sin(tw)) * 1.6;',
-    '    float f = fbm(cyl + vec2(z * 0.9, -z * 0.6));',
-    '    float rings = smoothstep(0.15, 0.85, 0.5 + 0.5 * sin(z * 5.0 + f * 3.0));',
-    '    float spokes = smoothstep(0.2, 0.9, 0.5 + 0.5 * sin(tw * 6.0 + z * 1.5 + T * 0.6));',
-    '    c = pal(z * 0.05 + f * 0.8 + hue + 0.12 * sin(tw)) * (0.25 + 0.9 * rings * (0.4 + 0.6 * spokes) + 0.35 * f);',
-    '    c *= smoothstep(0.0, 0.55, r) * (0.8 + 0.6 * bass);',
-    '    c += vec3(1.0, 0.8, 0.55) * 0.5 * pulse * smoothstep(0.35, 0.0, r);',
-    '  } else {',
-    // Liquid: melting, chromatic plasma.
-    '    vec2 p = uv * (2.4 + mid);',
-    '    for (int i = 1; i < 7; i++) { float fi = float(i);',
-    '      p.x += 0.45 / fi * sin(fi * p.y + T * 0.55 + bass * 1.8 + fi);',
-    '      p.y += 0.45 / fi * cos(fi * p.x + T * 0.45 - high + fi * 1.3); }',
-    '    float f = 0.5 + 0.5 * sin(p.x + p.y);',
-    '    c = vec3(pal(f + hue).r, pal(f + hue + 0.03 + 0.04 * high).g, pal(f + hue + 0.06 + 0.06 * high).b);',
-    '    c *= 0.55 + 0.6 * f + 0.25 * bass;',
+    // Tunnel: a ring of lights around the edge; the feedback shrinks it toward the middle, ring
+    // after ring, so it feels like flying down a tunnel. (Shrinking keeps the trails sharp.)
+    '    float rad = 0.46 + 0.08 * bass;',
+    '    float ring = exp(-pow((length(uv * vec2(0.58, 1.0)) - rad) * 26.0, 2.0));',
+    '    float dots = pow(0.5 + 0.5 * sin(a * 12.0 + T * 2.3), 3.0);',
+    '    return pal(hue + T * 0.07 + a / 6.28318) * ring * (0.25 + 1.2 * dots);',
+    '  } else if (mode < 2.5) {',
+    // Liquid: thin contour lines of a moving plasma, smeared by the flow.
+    '    vec2 p = uv * 3.0;',
+    '    float f = sin(p.x * 1.7 + T) + sin(p.y * 2.1 - T * 0.8) + sin((p.x + p.y) * 1.3 + T * 0.6) + sin(length(p) * 2.5 - T * 1.4);',
+    '    return pal(f * 0.25 + hue) * smoothstep(0.9, 1.0, abs(sin(f * 2.2))) * 0.75;',
     '  }',
-    // A ring of light rolls out from the middle on every beat.
-    '  float ring = exp(-pow((r - wave * 1.25) * 9.0, 2.0)) * exp(-wave * 2.6);',
-    '  c += pal(hue + 0.15) * ring * 1.4;',
-    '  c += c * pulse * 0.35;',
-    '  c *= 1.0 - 0.55 * smoothstep(0.55, 1.15, length((gl_FragCoord.xy - 0.5 * R) / R.y * vec2(0.9, 1.1)));',
-    '  gl_FragColor = vec4(pow(clamp(c, 0.0, 1.0), vec3(0.92)), 1.0);',
+    // Fractal: the "kali" set, which folds space into endless filigree; the music bends it.
+    '  vec2 p = uv * (1.4 + 0.25 * sin(T * 0.09));',
+    '  vec2 c = vec2(-0.72 + 0.07 * sin(T * 0.13) + 0.08 * mid, -0.52 + 0.07 * cos(T * 0.11) + 0.1 * bass);',
+    '  float acc = 0.0, last = 0.0;',
+    '  for (int i = 0; i < 10; i++) { p = abs(p) / (dot(p, p) + 0.0001) + c; float l = length(p); acc += abs(l - last); last = l; }',
+    '  return pal(acc * 0.036 + hue) * clamp(acc * 0.035, 0.0, 1.0);',
+    '}',
+    'void main(){',
+    '  vec2 asp = vec2(R.x / R.y, 1.0);',
+    '  vec2 uv = (v - 0.5) * asp;',
+    '  float r = length(uv);',
+    '  vec2 q = uv;',
+    // Kaleidoscope: the trails go back through the mirrors too, which grows an endless mandala.
+    '  if (mode < 0.5) q = fold(q, seg);',
+    '  float cr = cos(rot), sr = sin(rot);',
+    '  q = mat2(cr, sr, -sr, cr) * q / zoom;',
+    '  vec2 g = vec2(fbm(uv * 2.6 + T * 0.17), fbm(uv * 2.6 - T * 0.15 + 5.2)) - 0.5;',
+    '  if (mode > 1.5 && mode < 2.5) q += vec2(-g.y, g.x) * warp * 3.0 + g * warp;',
+    '  else q += g * warp;',
+    '  if (mode > 0.5 && mode < 1.5) q *= 1.0 + 0.012 * sin(r * 18.0 - T * 4.0) * (0.3 + bass);',
+    '  vec2 st = q / asp + 0.5;',
+    '  st = 1.0 - abs(1.0 - mod(st, 2.0));', // mirror at the edges instead of pulling in black
+    '  vec3 pc = hueRot(texture2D(prev, st).rgb, hueStep);',
+    '  pc = max(pc * decay - 0.0035, 0.0);',
+    '  vec3 src = source(mode < 0.5 ? fold(uv, seg) : uv) * srcAmt;',
+    '  gl_FragColor = vec4(max(pc, src) + src * 0.2, 1.0);',
+    '}'
+  ].join('\n');
+  const VIZ_SHOW = VIZ_COMMON + [
+    'uniform sampler2D tex; uniform float kick;',
+    'void main(){',
+    '  vec2 d = v - 0.5;',
+    '  float r = length(d * vec2(R.x / R.y, 1.0));',
+    // Colour fringes that widen with the bass and with each beat's punch.
+    '  vec2 off = d * (0.003 + 0.012 * bass + 0.03 * kick);',
+    '  vec3 c = vec3(texture2D(tex, v + off).r, texture2D(tex, v).g, texture2D(tex, v - off).b);',
+    '  c *= 1.0 + 0.1 * pulse;',
+    '  c *= 1.0 - 0.5 * smoothstep(0.55, 1.12, r);',
+    '  gl_FragColor = vec4(pow(c, vec3(0.9)), 1.0);',
     '}'
   ].join('\n');
 
   const Viz = {
-    open: false, gl: null, prog: null, u: {}, raf: 0, style: Store.get('vizStyle', 0) % VIZ_STYLES.length,
-    map: null, url: null, t0: 0, travel: 0, lastT: 0,
-    lvl: { bass: 0, mid: 0, high: 0 }, hueBase: Math.random(), hueKick: 0, lastBeat: -1,
+    open: false, gl: null, progs: null, raf: 0, style: Store.get('vizStyle', 0) % VIZ_STYLES.length,
+    map: null, url: null, t0: 0, lastT: 0,
+    lvl: { bass: 0, mid: 0, high: 0 }, hueBase: Math.random(), lastBeat: -1, fakeBeat: 0,
+    phys: null, targets: null, front: 0,
     clock: { pos: 0, at: 0 }, infoTimer: 0, hintTimer: 0,
     show() {
       if (this.open) return;
@@ -2029,6 +2083,7 @@
       $('#viz').classList.remove('hidden');
       if (!this.gl && !this.init()) { this.open = false; $('#viz').classList.add('hidden'); toast('This console can’t draw the visualizer.'); return; }
       this.t0 = performance.now(); this.lastT = 0; this.perf = { sum: 0, n: 0 };
+      this.phys = { rotVel: 0, dir: 1, zoomKick: 0, hueKick: 0, beats: 0, seg: 8 };
       this.sync();
       this.track(true);
       this.hint('A next style · X play/pause · LB/RB song · B close', 4500);
@@ -2042,33 +2097,61 @@
       $('#viz').classList.add('hidden');
       // Give the graphics memory back.
       try { const ext = this.gl && this.gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) { /* ignore */ }
-      this.gl = null; this.prog = null;
+      this.gl = null; this.progs = null; this.targets = null;
       Sfx.play('back');
     },
     init() {
       const cv = $('#vizCanvas');
-      const gl = cv.getContext('webgl', { antialias: false, alpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' }) ||
+      const gl = cv.getContext('webgl', { antialias: false, alpha: false, depth: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' }) ||
         cv.getContext('experimental-webgl');
       if (!gl) return false;
       const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { nativeLog('visualizer shader: ' + gl.getShaderInfoLog(s)); return null; } return s; };
-      const vs = sh(gl.VERTEX_SHADER, 'attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }');
-      const fs = sh(gl.FRAGMENT_SHADER, VIZ_FRAG);
-      if (!vs || !fs) return false;
-      const pr = gl.createProgram();
-      gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
-      if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) return false;
-      gl.useProgram(pr);
+      const vs = sh(gl.VERTEX_SHADER, 'attribute vec2 p; varying vec2 v; void main(){ v = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }');
+      const link = (fsrc, names) => {
+        const fs = sh(gl.FRAGMENT_SHADER, fsrc);
+        if (!vs || !fs) return null;
+        const pr = gl.createProgram();
+        gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.bindAttribLocation(pr, 0, 'p'); gl.linkProgram(pr);
+        if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) { nativeLog('visualizer link: ' + gl.getProgramInfoLog(pr)); return null; }
+        const u = {};
+        names.forEach(n => { u[n] = gl.getUniformLocation(pr, n); });
+        return { pr: pr, u: u };
+      };
+      const common = ['R', 'T', 'bass', 'mid', 'high', 'pulse', 'mode', 'hue'];
+      const feed = link(VIZ_FEED, common.concat(['prev', 'zoom', 'rot', 'warp', 'decay', 'hueStep', 'seg', 'srcAmt']));
+      const show = link(VIZ_SHOW, common.concat(['tex', 'kick']));
+      if (!feed || !show) return false;
       const buf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buf);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-      const loc = gl.getAttribLocation(pr, 'p');
-      gl.enableVertexAttribArray(loc);
-      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      ['R', 'T', 'bass', 'mid', 'high', 'pulse', 'wave', 'mode', 'hue', 'travel'].forEach(n => { this.u[n] = gl.getUniformLocation(pr, n); });
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      this.gl = gl; this.progs = { feed: feed, show: show };
+      this.resize();
+      return !!this.targets;
+    },
+    // Two pictures the size of the canvas: one is read (last frame) while the other is drawn.
+    resize() {
+      const gl = this.gl, cv = $('#vizCanvas');
       cv.width = Math.round(960 * this.scale); cv.height = Math.round(540 * this.scale);
-      gl.viewport(0, 0, cv.width, cv.height);
-      this.gl = gl; this.prog = pr;
-      return true;
+      if (this.targets) this.targets.forEach(t => { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fb); });
+      this.targets = [0, 1].map(() => {
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, cv.width, cv.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        const fb = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+        gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+        return { tex: tex, fb: fb };
+      });
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) { nativeLog('visualizer: framebuffer not complete'); this.targets = null; }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this.front = 0;
     },
     // The player reports its position once a second; in between, count forward ourselves.
     sync() {
@@ -2104,50 +2187,93 @@
       Store.set('vizStyle', this.style);
       this.hint(VIZ_STYLES[this.style], 1800);
     },
+    // A beat moves things rather than lighting them up: a punch of zoom, a shove of spin, a turn
+    // of the colour wheel. Every couple of bars the spin changes direction, and every four bars
+    // the kaleidoscope changes how many mirrors it has.
+    onBeat(strength) {
+      const ph = this.phys;
+      ph.beats++;
+      ph.zoomKick += 0.016 + 0.03 * strength;
+      ph.rotVel += ph.dir * (0.007 + 0.014 * strength);
+      ph.hueKick += 0.05 + 0.07 * strength;
+      if (ph.beats % 8 === 0) ph.dir = -ph.dir;
+      if (ph.beats % 16 === 0) ph.seg = [6, 8, 10, 12, 5, 7][(ph.beats / 16) % 6];
+    },
     frame(now) {
-      if (!this.open || !this.gl) return;
+      if (!this.open || !this.gl || !this.targets) return;
       this.raf = requestAnimationFrame(t => this.frame(t));
-      const gl = this.gl, u = this.u;
-      const T = (now - this.t0) / 1000, dt = Math.min(0.1, T - this.lastT);
+      const gl = this.gl;
+      const T = (now - this.t0) / 1000, dt = Math.max(0.001, Math.min(0.1, T - this.lastT));
       this.lastT = T;
       this.adapt(dt);
       const playing = P.state === 'playing';
       const pos = this.pos(now);
-      let tb, tm, th, pulse = 0, wave = 9;
+      let tb, tm, th, pulse = 0;
       const m = this.map;
       if (m && m.frames) {
         const i = Math.max(0, Math.min(m.frames - 1, Math.floor(pos * m.fps)));
         tb = m.bass[i]; tm = m.mid[i]; th = m.high[i];
-        // Time since the most recent beat.
         let lo = 0, hi = m.beats.length - 1, b = -1;
         while (lo <= hi) { const c = (lo + hi) >> 1; if (m.beats[c] <= pos) { b = c; lo = c + 1; } else hi = c - 1; }
         if (b >= 0) {
-          const since = pos - m.beats[b];
-          pulse = Math.exp(-since * 7); wave = since;
-          if (b !== this.lastBeat) { this.lastBeat = b; this.hueKick += 0.06 + 0.05 * Math.min(1, tb); }
+          pulse = Math.exp(-(pos - m.beats[b]) * 7);
+          if (b !== this.lastBeat) { if (this.lastBeat >= 0 && b === this.lastBeat + 1 && playing) this.onBeat(Math.min(1.2, tb)); this.lastBeat = b; }
         }
       } else {
-        // Song not mapped (yet, or a format the console can't read): drift gently instead.
+        // Song not mapped (yet, or a format the console can't read): a steady, gentler pulse.
         tb = 0.35 + 0.15 * Math.sin(T * 1.7); tm = 0.4 + 0.1 * Math.sin(T * 0.9); th = 0.3;
+        if (playing && T - this.fakeBeat > 0.6) { this.fakeBeat = T; this.onBeat(0.35); }
       }
       if (!playing) { tb *= 0.3; tm *= 0.3; th *= 0.3; pulse = 0; }
-      // Fast attack, slower release, so the motion punches without jitter.
       const ease = (cur, target, up, down) => cur + (target - cur) * Math.min(1, dt * (target > cur ? up : down));
-      const L = this.lvl;
+      const L = this.lvl, ph = this.phys;
       L.bass = ease(L.bass, tb, 22, 6); L.mid = ease(L.mid, tm, 14, 5); L.high = ease(L.high, th, 18, 6);
-      this.travel += dt * (0.35 + 1.6 * L.bass + 0.6 * L.mid) * (playing ? 1 : 0.25);
-      gl.uniform2f(u.R, gl.drawingBufferWidth, gl.drawingBufferHeight);
-      gl.uniform1f(u.T, T); gl.uniform1f(u.bass, L.bass); gl.uniform1f(u.mid, L.mid); gl.uniform1f(u.high, L.high);
-      gl.uniform1f(u.pulse, pulse); gl.uniform1f(u.wave, wave); gl.uniform1f(u.mode, this.style);
-      gl.uniform1f(u.hue, this.hueBase + T * 0.012 + this.hueKick); gl.uniform1f(u.travel, this.travel);
+      ph.zoomKick *= Math.exp(-dt * 5); ph.rotVel *= Math.exp(-dt * 1.6);
+      const hueStep = (0.002 + 0.012 * L.high) * dt * 60 + ph.hueKick * Math.min(1, dt * 8);
+      ph.hueKick *= Math.exp(-dt * 8);
+      const s = this.style, k60 = dt * 60, slow = playing ? 1 : 0.3;
+      const baseZoom = [0.007, 0.018, 0.002, 0.004][s], baseDecay = [0.972, 0.972, 0.976, 0.95][s];
+      let zoom = Math.pow(1 + (baseZoom + 0.014 * L.bass + ph.zoomKick) * slow, k60);
+      if (s === 1) zoom = 1 / zoom; // the tunnel pulls everything toward the middle instead
+      const srcAmt = (0.5 + 0.55 * L.bass + 0.25 * pulse) * [1, 1, 0.7, 0.85][s];
+      const rot = (ph.dir * 0.003 + ph.rotVel) * k60 * slow * (s === 1 ? 1.6 : 1);
+      const warp = (0.003 + 0.012 * L.mid) * k60 * slow * (s === 2 ? 2.5 : 1);
+      const decay = Math.pow(baseDecay, k60);
+      const hue = this.hueBase + T * 0.01;
+      const cv = $('#vizCanvas'), W = cv.width, H = cv.height;
+      const common = (p) => {
+        gl.uniform2f(p.u.R, W, H); gl.uniform1f(p.u.T, T); gl.uniform1f(p.u.bass, L.bass); gl.uniform1f(p.u.mid, L.mid);
+        gl.uniform1f(p.u.high, L.high); gl.uniform1f(p.u.pulse, pulse); gl.uniform1f(p.u.mode, s); gl.uniform1f(p.u.hue, hue);
+      };
+      // 1. The new frame, built from the last one.
+      const src = this.targets[this.front], dst = this.targets[1 - this.front];
+      const f = this.progs.feed;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
+      gl.viewport(0, 0, W, H);
+      gl.useProgram(f.pr);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex);
+      gl.uniform1i(f.u.prev, 0);
+      common(f);
+      gl.uniform1f(f.u.zoom, zoom); gl.uniform1f(f.u.rot, rot); gl.uniform1f(f.u.warp, warp); gl.uniform1f(f.u.decay, decay);
+      gl.uniform1f(f.u.hueStep, hueStep); gl.uniform1f(f.u.seg, ph.seg); gl.uniform1f(f.u.srcAmt, srcAmt);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      // 2. Onto the screen, with colour fringes on the bass.
+      const d = this.progs.show;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, W, H);
+      gl.useProgram(d.pr);
+      gl.bindTexture(gl.TEXTURE_2D, dst.tex);
+      gl.uniform1i(d.u.tex, 0);
+      common(d);
+      gl.uniform1f(d.u.kick, Math.min(1, ph.zoomKick * 12));
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      this.front = 1 - this.front;
     },
     // Keep it smooth: draw fewer pixels if frames are slow, more again when there's room.
     // (It's soft and blurry by nature, so a lower resolution barely shows.)
     perf: { sum: 0, n: 0 }, scale: 1,
     adapt(dt) {
       const pf = this.perf;
-      if (!dt) return;
       pf.sum += dt; pf.n++;
       if (pf.n < 30 && pf.sum < 1) return;
       const avg = pf.sum / pf.n;
@@ -2157,9 +2283,7 @@
       else if (avg < 1 / 58 && k < 1) k = Math.min(1, k * 1.15);
       if (k === this.scale) return;
       this.scale = k;
-      const cv = $('#vizCanvas');
-      cv.width = Math.round(960 * k); cv.height = Math.round(540 * k);
-      this.gl.viewport(0, 0, cv.width, cv.height);
+      this.resize();
     },
     handle(action) {
       switch (action) {

@@ -52,6 +52,7 @@ namespace WmcSx
         private int videoIndex;
         private int videoCount = 1;
         private DateTime lastVideoStep = DateTime.MinValue;
+        private DateTime videoClosedAt = DateTime.MinValue;
         private HttpRangeStream videoRange;
         private readonly System.Diagnostics.Stopwatch videoClock = new System.Diagnostics.Stopwatch();
         private readonly DispatcherTimer tick = new DispatcherTimer();
@@ -134,6 +135,7 @@ namespace WmcSx
 
                 SystemNavigationManager.GetForCurrentView().BackRequested += OnBackRequested;
                 PreviewKeyDown += OnPreviewKeyDown;
+                Dispatcher.AcceleratorKeyActivated += OnAnyKey;
                 // Tell the interface when the guide or another app is on top, so controller
                 // presses meant for them aren't acted on here.
                 Window.Current.Activated += (s, e) =>
@@ -1122,6 +1124,8 @@ namespace WmcSx
         {
             if (!videoOpen) return;
             videoOpen = false;
+            videoClosedAt = DateTime.UtcNow;
+            Log.Write("Video: closed" + (ended ? " (finished)" : ""));
             double pos = video.PlaybackSession.Position.TotalSeconds;
             double dur = video.PlaybackSession.NaturalDuration.TotalSeconds;
             video.Pause();
@@ -1231,6 +1235,22 @@ namespace WmcSx
             catch (Exception ex)
             {
                 Log.Error("ElementSoundPlayer", ex);
+            }
+        }
+
+        // For two seconds after a video closes, note every key the console delivers, so the log
+        // shows whether a stray d-pad press really came from the controller.
+        private void OnAnyKey(CoreDispatcher sender, AcceleratorKeyEventArgs e)
+        {
+            try
+            {
+                double ms = (DateTime.UtcNow - videoClosedAt).TotalMilliseconds;
+                if (ms > 2000) return;
+                if (e.EventType != CoreAcceleratorKeyEventType.KeyDown && e.EventType != CoreAcceleratorKeyEventType.SystemKeyDown) return;
+                Log.Write("Console key " + e.VirtualKey + (e.KeyStatus.WasKeyDown ? " (still held)" : "") + ", " + (int)ms + " ms after the video closed");
+            }
+            catch
+            {
             }
         }
 
