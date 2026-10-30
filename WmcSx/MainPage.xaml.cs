@@ -189,7 +189,7 @@ namespace WmcSx
             {
                 StatusText.Visibility = Visibility.Collapsed;
                 System.Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--autoplay-policy=no-user-gesture-required");
-                System.Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF061C66");
+                System.Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF14060B");
 
                 Log.Write("WebView2: creating");
                 var view = new WebView2();

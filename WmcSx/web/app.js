@@ -76,7 +76,7 @@
     // Full-size pictures use their own address so they never queue behind tiles.
     return (size ? 'https://media.wmcsx/img?u=' : 'https://full.wmcsx/img?u=') + encodeURIComponent(u) + (size ? '&s=' + size : '');
   }
-  const GRADS = ['#5FB4FF,#0F4FB8', '#7FE3D0,#127A8C', '#9AA8FF,#3A3FB0', '#FFC48A,#C25A14', '#8FE07A,#2C7A26', '#7CCBFF,#1E5FA8', '#C3A6FF,#5B37B0', '#6FD6F0,#0E6D90', '#FFB0C4,#B03A62', '#A8D8FF,#2B6CC4'];
+  const GRADS = ['#F7B25A,#A8480E', '#E8806A,#7A2420', '#D9A066,#6A3A1A', '#F2C27A,#B0641A', '#C9786A,#5A2230', '#E6A15C,#8A3A12', '#B98A9E,#4A2238', '#E0B08A,#7A4428', '#F09A72,#9A3A1E', '#C9A070,#5A3A22'];
   function hash(s) { let h = 0; s = String(s || ''); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
   const ART_SIZE = 480;
   const gradOf = seed => 'linear-gradient(135deg,' + GRADS[hash(seed) % GRADS.length] + ')';

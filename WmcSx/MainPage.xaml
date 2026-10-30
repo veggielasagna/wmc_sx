@@ -2,7 +2,7 @@
     x:Class="WmcSx.MainPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Background="#061C66">
+    Background="#14060B">
     <Grid>
         <!-- The interface (a WebView2 showing web\index.html) is added here in code,
              so it can be unloaded while music plays in the background. -->
@@ -29,8 +29,8 @@
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                 <ProgressRing IsActive="True" Width="72" Height="72" Foreground="#F28A1E" />
                 <TextBlock Text="Loading…" Margin="0,24,0,0" FontSize="28" Foreground="White" HorizontalAlignment="Center" />
-                <TextBlock x:Name="VideoLoadingTitle" Margin="0,8,0,0" FontSize="20" Foreground="#A9C8F0" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="900" />
-                <TextBlock x:Name="VideoLoadingHint" Text="Press B to cancel" Margin="0,28,0,0" FontSize="18" Foreground="#7F9FC8" HorizontalAlignment="Center" />
+                <TextBlock x:Name="VideoLoadingTitle" Margin="0,8,0,0" FontSize="20" Foreground="#E3C3A6" HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="900" />
+                <TextBlock x:Name="VideoLoadingHint" Text="Press B to cancel" Margin="0,28,0,0" FontSize="18" Foreground="#BF9A80" HorizontalAlignment="Center" />
             </StackPanel>
         </Grid>
     </Grid>

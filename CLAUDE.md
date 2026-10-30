@@ -14,6 +14,7 @@ Don't put real IP addresses, device or NAS names, or other home-network details 
   - `https://media.wmcsx/img?u=<url>&s=<size>` serves tiles and artwork. They're shrunk to `size` and saved in LocalCache\thumbs.
   - `https://full.wmcsx/img?u=<url>` serves full-size photos. It's a separate host so full photos never queue behind tiles, because Chromium limits requests per host.
   - `/usbthumb?p=` and `/usbfile?p=` serve USB files.
+  - `https://full.wmcsx/audio?u=<url>` serves a whole song (max 60 MB, one at a time) for the music visualizer.
 - **JS ↔ C# bridge:** `Bridge.call(cmd, args)` → `MainPage.Handle(cmd)`. C# sends events back with `PostEvent` (`server`, `player`, `toast`, `videoClosed`, `back`, `active`).
 - **`web/mock.js`:** fakes the C# side so the interface runs in a normal browser.
   - Serve the folder with `python3 -m http.server`, then use Playwright for screenshots.
@@ -58,6 +59,13 @@ Don't put real IP addresses, device or NAS names, or other home-network details 
   - Still uses plain `<img>`: the photo viewer (full-size photos) and single artwork (Now Playing, album header). Those are covered by the safety nets.
   - The log notes `Pictures made: N, <memory>` every 100 tiles, so memory growth shows up in the log.
 - **Controller input:** ignore it while the app isn't active (the guide or another app is on top). The C# side sends an `active` event.
+- **Ghost presses after closing a video (fixed 1.0.23+):** focus jumped a tile or two left/right right after backing out of a video, with nobody touching the controller (two moves ~100 ms apart). `settleInput()` in `app.js` ignores direction input for 700 ms after `videoClosed` (350 ms after `active`), and a key repeat only counts if its first press was seen. Ignored presses are logged as `input: ignored key …`; if the jump ever comes back, that log line says which key code the engine sent.
+- **Big folders:** `Lib.browsePages` reads folders in pages of 500 with no 5,000 cap. `folderLoader` shows the first ~400 items, then streams the rest into the same collection (and the photo viewer's list) while the screen stays open. The live count is `#folderCount`.
+- **Navigation speed:** focus scrolling uses `bringIntoView()` (a 110 ms glide), not `scrollIntoView({behavior:'smooth'})`, which lagged behind held presses. `nearest()` looks only at on-screen items first.
+- **Videos:** d-pad left/right in the player sends `videoStep`; JS plays the previous/next item of `videoList`. When switching, C# posts `videoClosed` with `switched: true` for the old video (so Continue watching keeps its spot) and the interface stays hidden.
+- **Music visualizer:** Y on Now Playing (`Viz` in `app.js`). The native player's audio can't be tapped from the page, so `Beats` fetches the song via `/audio`, decodes it at 11 kHz with OfflineAudioContext, and maps bass/mid/treble at 60 fps plus beat times; the WebGL shader follows the player position. Songs over 15 min or 60 MB, or formats Chromium can't decode (ALAC, WMA), get the gentle no-beat mode. Resolution adapts to frame time; the GL context is lost on close to free memory.
+- **Menu sounds:** silent while music is playing (`Sfx.play`); C# also sets `ElementSoundPlayer.State` Off while music plays.
+- **Look:** warm Aero (1.0.23+): ember-dusk backdrop with light streaks, smoked-bronze glass with a top-half gloss and inner edge, amber selected glass, honey-gold focus glow. No `filter: blur` or `backdrop-filter` on animated layers; they're expensive on the Xbox GPU. Store screenshots in `store-assets/` still show the old blue look.
 - **Thumbnail bug (fixed):** in `style="…"` attributes, background URLs must use single quotes. A double quote ended the attribute and broke every thumbnail.
 
 ## Open issues
