@@ -64,6 +64,7 @@ namespace WmcSx
             Log.Write("MainPage: constructor");
             InitializeComponent();
             Current = this;
+            Background = new Windows.UI.Xaml.Media.SolidColorBrush(ParseColor(SavedBackground()));
             Log.Write("MainPage: layout loaded");
 
             try
@@ -163,6 +164,28 @@ namespace WmcSx
             };
         }
 
+        /// <summary>The background colour of the theme the owner picked (Settings › Colors).</summary>
+        private static string SavedBackground()
+        {
+            try
+            {
+                var v = ApplicationData.Current.LocalSettings.Values["background"] as string;
+                if (v != null && System.Text.RegularExpressions.Regex.IsMatch(v, "^#[0-9A-Fa-f]{6}$")) return v.ToUpperInvariant();
+            }
+            catch
+            {
+            }
+            return "#14060B";
+        }
+
+        private static Windows.UI.Color ParseColor(string hex)
+        {
+            return Windows.UI.Color.FromArgb(255,
+                Convert.ToByte(hex.Substring(1, 2), 16),
+                Convert.ToByte(hex.Substring(3, 2), 16),
+                Convert.ToByte(hex.Substring(5, 2), 16));
+        }
+
         public void ShowError(string message)
         {
             try
@@ -189,7 +212,7 @@ namespace WmcSx
             {
                 StatusText.Visibility = Visibility.Collapsed;
                 System.Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--autoplay-policy=no-user-gesture-required");
-                System.Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF14060B");
+                System.Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "FF" + SavedBackground().Substring(1));
 
                 Log.Write("WebView2: creating");
                 var view = new WebView2();
@@ -392,6 +415,17 @@ namespace WmcSx
                 case "log":
                     Log.Write("Interface: " + J.Str(a, "text", ""));
                     return null;
+                case "theme":
+                {
+                    // The chosen theme's background, shown before the interface loads next time.
+                    string bg = J.Str(a, "background", "");
+                    if (System.Text.RegularExpressions.Regex.IsMatch(bg, "^#[0-9A-Fa-f]{6}$"))
+                    {
+                        ApplicationData.Current.LocalSettings.Values["background"] = bg;
+                        Background = new Windows.UI.Xaml.Media.SolidColorBrush(ParseColor(bg));
+                    }
+                    return null;
+                }
                 case "saveFile":
                 {
                     var file = await ApplicationData.Current.LocalFolder.CreateFileAsync(SafeName(J.Str(a, "name")), CreationCollisionOption.ReplaceExisting);

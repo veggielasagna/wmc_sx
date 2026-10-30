@@ -79,7 +79,76 @@
   const GRADS = ['#F7B25A,#A8480E', '#E8806A,#7A2420', '#D9A066,#6A3A1A', '#F2C27A,#B0641A', '#C9786A,#5A2230', '#E6A15C,#8A3A12', '#B98A9E,#4A2238', '#E0B08A,#7A4428', '#F09A72,#9A3A1E', '#C9A070,#5A3A22'];
   function hash(s) { let h = 0; s = String(s || ''); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
   const ART_SIZE = 480;
-  const gradOf = seed => 'linear-gradient(135deg,' + GRADS[hash(seed) % GRADS.length] + ')';
+  const gradOf = seed => 'linear-gradient(135deg,' + Theme.grads[hash(seed) % Theme.grads.length] + ')';
+
+  /* ================================================================ Colour themes */
+  // Every colour in app.css is a variable (--t0, --t1, …) holding the Ember values. A theme turns
+  // the whole set around the colour wheel and adjusts its strength, so the glass, edges, glows and
+  // text tints keep the same relationships in every theme.
+  const THEMES = [
+    { id: 'ember', name: 'Ember', hue: 0, sat: 1, light: 1 },
+    { id: 'aero', name: 'Aero Blue', hue: 190, sat: 0.95, light: 1.06 },
+    { id: 'lagoon', name: 'Lagoon', hue: 158, sat: 0.85, light: 1.02 },
+    { id: 'emerald', name: 'Emerald', hue: 112, sat: 0.78, light: 1 },
+    { id: 'gold', name: 'Gold', hue: 18, sat: 1, light: 1.03 },
+    { id: 'rose', name: 'Rose', hue: -30, sat: 0.92, light: 1.03 },
+    { id: 'amethyst', name: 'Amethyst', hue: -100, sat: 0.85, light: 1.07 },
+    { id: 'graphite', name: 'Graphite', hue: 190, sat: 0.1, light: 1.02 }
+  ];
+  const Theme = {
+    base: null, grads: GRADS, current: 'ember',
+    rgbToHsl(r, g, b) {
+      r /= 255; g /= 255; b /= 255;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+      if (mx === mn) return [0, 0, l];
+      const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+      const h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      return [h * 60, s, l];
+    },
+    hslToRgb(h, s, l) {
+      h = ((h % 360) + 360) % 360 / 360;
+      if (!s) { const v = Math.round(l * 255); return [v, v, v]; }
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+      const f = t => { t = (t + 1) % 1; return t < 1 / 6 ? p + (q - p) * 6 * t : t < 0.5 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p; };
+      return [f(h + 1 / 3), f(h), f(h - 1 / 3)].map(v => Math.round(v * 255));
+    },
+    shift(rgb, t) {
+      const hsl = this.rgbToHsl(rgb[0], rgb[1], rgb[2]);
+      return this.hslToRgb(hsl[0] + t.hue, Math.min(1, hsl[1] * t.sat), Math.min(1, hsl[2] * t.light));
+    },
+    hex(rgb) { return '#' + rgb.map(v => ('0' + v.toString(16)).slice(-2)).join(''); },
+    readBase() {
+      if (this.base) return this.base;
+      const cs = getComputedStyle(document.documentElement), out = [];
+      for (let i = 0; ; i++) {
+        const v = cs.getPropertyValue('--t' + i).trim();
+        if (!v) break;
+        out.push(v.split(',').map(Number));
+      }
+      return (this.base = out);
+    },
+    byId(id) { return THEMES.find(t => t.id === id) || THEMES[0]; },
+    // A few of the theme's own colours, for the swatches in Settings.
+    preview(t) {
+      const f = h => this.hex(this.shift([parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)], t));
+      return { bg1: f('#4A1A1C'), bg2: f('#250B12'), glow: f('#7A2E1C'), cap1: f('#F7B25A'), cap2: f('#B85A12'), focus: f('#FFC870') };
+    },
+    apply(id) {
+      const t = this.byId(id);
+      this.current = t.id;
+      const base = this.readBase(), root = document.documentElement.style;
+      base.forEach((c, i) => {
+        const v = t.id === 'ember' ? c : this.shift(c, t);
+        root.setProperty('--t' + i, v.join(','));
+      });
+      root.setProperty('--ribbon', this.shift([255, 216, 168], t).join(','));
+      this.grads = GRADS.map(pair => pair.split(',').map(h => this.hex(this.shift([parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)], t))).join(','));
+      // The app shows this colour before the interface has loaded, so the next start matches.
+      const bg = this.hex(this.shift([20, 6, 11], t));
+      if (native) Bridge.call('theme', { background: bg }).catch(() => {});
+      return t;
+    }
+  };
   function artBg(art, seed) {
     const g = gradOf(seed);
     const u = mediaUrl(art, ART_SIZE);
@@ -177,7 +246,8 @@
     note: '<path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>',
     person: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c1-4 4-6 7-6s6 2 7 6"/>',
     tag: '<path d="M3 12V4h8l9 9-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
-    film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>'
+    film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+    palette: '<path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.3-1.1-1.6-1.1-2.8 0-1 .8-1.7 1.9-1.7h2.1c2.4 0 3.8-1.6 3.8-3.8C20.5 6.6 16.7 3.5 12 3.5z"/><circle cx="7.6" cy="11" r="1.2"/><circle cx="10" cy="7.4" r="1.2"/><circle cx="14.6" cy="7.4" r="1.2"/>'
   };
   const ico = (name, cls) => '<svg class="' + (cls || 'ico') + '" viewBox="0 0 24 24" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
   const SVG = {
@@ -703,7 +773,7 @@
     { id: 'music', label: 'Music', tiles: [['Albums', 'grid', { name: 'music', view: 'albums' }], ['Artists', 'person', { name: 'music', view: 'artists' }], ['Search', 'search', { name: 'music', view: 'search' }], ['USB drive', 'usb', { name: 'music', view: 'usb' }]] },
     { id: 'videos', label: 'Videos', tiles: [['Movies', 'film', { name: 'videos', view: 'all' }], ['Continue', 'resume', { name: 'videos', view: 'continue' }], ['Folders', 'folder', { name: 'videos', view: 'folders' }], ['USB drive', 'usb', { name: 'videos', view: 'usb' }]] },
     { id: 'photos', label: 'Photos', tiles: [['Library', 'photo', { name: 'photos', view: 'library' }], ['USB drive', 'usb', { name: 'photos', view: 'usb' }]] },
-    { id: 'settings', label: 'Settings', tiles: [['Sources', 'server', { name: 'settings', view: 'sources' }], ['Playback', 'gear', { name: 'settings', view: 'playback' }], ['Library', 'search', { name: 'settings', view: 'index' }], ['About', 'info', { name: 'settings', view: 'about' }]] }
+    { id: 'settings', label: 'Settings', tiles: [['Sources', 'server', { name: 'settings', view: 'sources' }], ['Playback', 'gear', { name: 'settings', view: 'playback' }], ['Colors', 'palette', { name: 'settings', view: 'colors' }], ['About', 'info', { name: 'settings', view: 'about' }]] }
   ];
   let homeIdx = 0;
   let route = { name: 'home' };
@@ -741,7 +811,7 @@
   function setView(v) {
     // Switch the left-rail view inside a section without a full transition.
     route = Object.assign({}, route, { view: v });
-    Sfx.play('move', ['albums', 'artists', 'songs', 'genres', 'folders', 'usb', 'all', 'continue', 'library', 'sources', 'playback', 'index', 'about'].indexOf(v));
+    Sfx.play('move', ['albums', 'artists', 'songs', 'genres', 'folders', 'usb', 'all', 'continue', 'library', 'sources', 'playback', 'colors', 'index', 'about'].indexOf(v));
     $$('.rail[data-v]').forEach(el => el.classList.toggle('cap', el.dataset.v === v));
     const h = $('.sec-head h1');
     const r = renderers[route.name](route);
@@ -1478,10 +1548,10 @@
 
     settings(r) {
       const view = r.view || 'sources';
-      const titles = { sources: 'Sources', playback: 'Playback', index: 'Library', about: 'About' };
+      const titles = { sources: 'Sources', playback: 'Playback', colors: 'Colors', index: 'Library', about: 'About' };
       return {
         title: titles[view],
-        shell: sectionShell({ crumb: 'Home › Settings', title: titles[view], active: view, rail: [['sources', 'Sources'], ['playback', 'Playback'], ['index', 'Library'], ['about', 'About']] }),
+        shell: sectionShell({ crumb: 'Home › Settings', title: titles[view], active: view, rail: [['sources', 'Sources'], ['playback', 'Playback'], ['colors', 'Colors'], ['index', 'Library'], ['about', 'About']] }),
         content: settingsHtml(view)
       };
     }
@@ -1592,6 +1662,18 @@
         toggle('resume', 'Resume videos', 'Pick up videos where you left off') +
         '</div><div class="panel glass enter d2"><h2>Continue watching</h2><div class="kv">' + Object.keys(Resume.all()).length + ' videos saved partway through.</div><div class="btn-row"><button class="btn glass f" data-act="clearResume">Clear the list</button></div></div>';
     }
+    if (view === 'colors') {
+      const sw = THEMES.map((t, i) => {
+        const c = Theme.preview(t), on = Theme.current === t.id;
+        return '<button class="swatch f enter d' + Math.min(5, i + 1) + (on ? ' on' : '') + '" data-act="theme" data-theme="' + t.id + '" data-k="theme-' + t.id + '"' + (on ? ' data-autofocus' : '') + '>' +
+          '<span class="sw-sky" style="background:radial-gradient(ellipse 120% 90% at 20% 0%,' + c.glow + ' 0%,transparent 65%),linear-gradient(160deg,' + c.bg1 + ',' + c.bg2 + ')">' +
+          '<span class="sw-pill" style="background:linear-gradient(180deg,rgba(255,255,255,.45) 0%,rgba(255,255,255,.1) 48%,rgba(255,255,255,0) 50%),linear-gradient(180deg,' + c.cap1 + ',' + c.cap2 + ')"></span>' +
+          '<span class="sw-ring" style="border-color:' + c.focus + ';box-shadow:0 0 14px ' + c.focus + '"></span></span>' +
+          '<span class="sw-name">' + esc(t.name) + '</span><span class="sw-on">' + (on ? 'In use' : '') + '</span></button>';
+      }).join('');
+      return '<div class="panel glass enter d1"><h2>Menu colors</h2><div class="kv">Changes the glass, highlights and background. Album art, photos and videos keep their own colors.</div>' +
+        '<div class="swatches">' + sw + '</div></div>';
+    }
     if (view === 'index') {
       const when = Lib.builtAt ? new Date(Lib.builtAt).toLocaleString() : 'never';
       return '<div class="panel glass enter d1"><h2>Library</h2>' +
@@ -1660,6 +1742,11 @@
       setTimeout(() => { if (!Array.from(Lib.servers.values()).some(s => s.host === ip.trim())) toast('No media server answered at ' + ip.trim() + '.'); }, 4000);
     },
     useServer: el => { const s = Lib.servers.get(el.dataset.id); if (s && (!Lib.server || Lib.server.id !== s.id)) Lib.select(s, true).then(() => refreshIf(['settings'])); },
+    theme: el => {
+      const t = Theme.apply(el.dataset.theme);
+      prefs.theme = t.id; savePrefs();
+      $$('.swatch').forEach(b => { const on = b.dataset.theme === t.id; b.classList.toggle('on', on); b.querySelector('.sw-on').textContent = on ? 'In use' : ''; });
+    },
     pref: el => { const k = el.dataset.pref; prefs[k] = !prefs[k]; savePrefs(); el.classList.toggle('on', prefs[k]); if (k === 'sound' && prefs.sound) Sfx.play('select'); },
     showLog: () => showLogText(false),
     showPrevLog: () => showLogText(true),
@@ -2105,6 +2192,7 @@
       await new Promise(res => { const s = document.createElement('script'); s.src = 'mock.js'; s.onload = res; s.onerror = res; document.head.appendChild(s); });
       if (!window.WmcMock) { document.body.textContent = 'mock.js missing'; return; }
     }
+    Theme.apply(prefs.theme || 'ember');
     nativeLog('interface started, screen ' + window.innerWidth + 'x' + window.innerHeight + ' @' + window.devicePixelRatio);
     fit();
     window.addEventListener('resize', fit);
