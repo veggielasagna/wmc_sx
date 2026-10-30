@@ -2006,7 +2006,7 @@
   ].join('\n');
   const VIZ_FEED = VIZ_COMMON + [
     'uniform sampler2D prev;',
-    'uniform float zoom, rot, warp, decay, hueStep, seg, srcAmt;',
+    'uniform float zoom, rot, warp, decay, hueStep, seg, srcAmt; uniform vec2 px;',
     'vec3 hueRot(vec3 c, float a){ vec3 k = vec3(0.57735); float ca = cos(a), sa = sin(a); return c * ca + cross(k, c) * sa + k * dot(k, c) * (1.0 - ca); }',
     'vec2 fold(vec2 p, float n){ float s = 6.28318 / n, a = mod(atan(p.y, p.x), s); a = abs(a - s * 0.5); return length(p) * vec2(cos(a), sin(a)); }',
     'vec3 source(vec2 uv){',
@@ -2051,7 +2051,10 @@
     '  if (mode > 0.5 && mode < 1.5) q *= 1.0 + 0.012 * sin(r * 18.0 - T * 4.0) * (0.3 + bass);',
     '  vec2 st = q / asp + 0.5;',
     '  st = 1.0 - abs(1.0 - mod(st, 2.0));', // mirror at the edges instead of pulling in black
-    '  vec3 pc = hueRot(texture2D(prev, st).rgb, hueStep);',
+    // Each copy of the last frame blurs a little; sharpen it back, so detail survives the trails.
+    '  vec3 c0 = texture2D(prev, st).rgb;',
+    '  vec3 nb = (texture2D(prev, st + vec2(px.x, 0.0)).rgb + texture2D(prev, st - vec2(px.x, 0.0)).rgb + texture2D(prev, st + vec2(0.0, px.y)).rgb + texture2D(prev, st - vec2(0.0, px.y)).rgb) * 0.25;',
+    '  vec3 pc = hueRot(clamp(c0 + (c0 - nb) * 0.55, 0.0, 1.0), hueStep);',
     '  pc = max(pc * decay - 0.0035, 0.0);',
     '  vec3 src = source(mode < 0.5 ? fold(uv, seg) : uv) * srcAmt;',
     '  gl_FragColor = vec4(max(pc, src) + src * 0.2, 1.0);',
@@ -2118,7 +2121,7 @@
         return { pr: pr, u: u };
       };
       const common = ['R', 'T', 'bass', 'mid', 'high', 'pulse', 'mode', 'hue'];
-      const feed = link(VIZ_FEED, common.concat(['prev', 'zoom', 'rot', 'warp', 'decay', 'hueStep', 'seg', 'srcAmt']));
+      const feed = link(VIZ_FEED, common.concat(['prev', 'zoom', 'rot', 'warp', 'decay', 'hueStep', 'seg', 'srcAmt', 'px']));
       const show = link(VIZ_SHOW, common.concat(['tex', 'kick']));
       if (!feed || !show) return false;
       const buf = gl.createBuffer();
@@ -2256,6 +2259,7 @@
       common(f);
       gl.uniform1f(f.u.zoom, zoom); gl.uniform1f(f.u.rot, rot); gl.uniform1f(f.u.warp, warp); gl.uniform1f(f.u.decay, decay);
       gl.uniform1f(f.u.hueStep, hueStep); gl.uniform1f(f.u.seg, ph.seg); gl.uniform1f(f.u.srcAmt, srcAmt);
+      gl.uniform2f(f.u.px, 1 / W, 1 / H);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       // 2. Onto the screen, with colour fringes on the bass.
       const d = this.progs.show;
@@ -2271,7 +2275,7 @@
     },
     // Keep it smooth: draw fewer pixels if frames are slow, more again when there's room.
     // (It's soft and blurry by nature, so a lower resolution barely shows.)
-    perf: { sum: 0, n: 0 }, scale: 1,
+    perf: { sum: 0, n: 0 }, scale: 1.334,
     adapt(dt) {
       const pf = this.perf;
       pf.sum += dt; pf.n++;
@@ -2280,7 +2284,7 @@
       pf.sum = 0; pf.n = 0;
       let k = this.scale;
       if (avg > 1 / 45 && k > 0.34) k = Math.max(0.33, k * 0.75);
-      else if (avg < 1 / 58 && k < 1) k = Math.min(1, k * 1.15);
+      else if (avg < 1 / 58 && k < 2) k = Math.min(2, k * 1.15);
       if (k === this.scale) return;
       this.scale = k;
       this.resize();
