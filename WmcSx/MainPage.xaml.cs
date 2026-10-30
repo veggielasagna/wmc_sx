@@ -69,7 +69,11 @@ namespace WmcSx
             try
             {
                 Dlna.ServerFound += s => RunOnUi(() => PostEvent("server", s.ToJson()));
-                player.Changed += () => RunOnUi(() => PostEvent("player", player.State()));
+                player.Changed += () => RunOnUi(() =>
+                {
+                    PostEvent("player", player.State());
+                    UpdateElementSounds();
+                });
 
                 tick.Interval = TimeSpan.FromSeconds(1);
                 tick.Tick += (s, e) =>
@@ -451,6 +455,21 @@ namespace WmcSx
                         }
                     }
                 }
+                else if (path == "/audio")
+                {
+                    // The song file, so the music visualizer can work out where the beats are.
+                    // (The music itself plays in the native player; the page never hears it.)
+                    string url;
+                    if (query.TryGetValue("u", out url))
+                    {
+                        var bytes = await FetchAudio(url);
+                        if (bytes != null)
+                        {
+                            type = "application/octet-stream";
+                            stream = await ToStream(bytes);
+                        }
+                    }
+                }
                 else if (path == "/usbthumb")
                 {
                     string p;
@@ -578,6 +597,49 @@ namespace WmcSx
             if (bytes.Length < 600 * 1024) Remember(key, result);
             if (size > 0) SaveThumb(file, bytes);
             return result;
+        }
+
+        // One song at a time, and nothing huge (a long FLAC can be 100+ MB).
+        private static readonly System.Threading.SemaphoreSlim audioGate = new System.Threading.SemaphoreSlim(1, 1);
+        private const long MaxAudioBytes = 60L * 1024 * 1024;
+
+        private static async Task<byte[]> FetchAudio(string url)
+        {
+            await audioGate.WaitAsync();
+            try
+            {
+                using (var resp = await Dlna.Client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+                {
+                    if (!resp.IsSuccessStatusCode) return null;
+                    long? len = resp.Content.Headers.ContentLength;
+                    if (len.HasValue && len.Value > MaxAudioBytes)
+                    {
+                        Log.Write("Visualizer: song too big to analyse (" + (len.Value / 1048576) + " MB)");
+                        return null;
+                    }
+                    using (var src = await resp.Content.ReadAsStreamAsync())
+                    using (var mem = new MemoryStream())
+                    {
+                        var buf = new byte[81920];
+                        int n;
+                        while ((n = await src.ReadAsync(buf, 0, buf.Length)) > 0)
+                        {
+                            mem.Write(buf, 0, n);
+                            if (mem.Length > MaxAudioBytes) return null;
+                        }
+                        return mem.ToArray();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write("Visualizer: couldn't read the song, " + ex.Message);
+                return null;
+            }
+            finally
+            {
+                audioGate.Release();
+            }
         }
 
         private void Remember(string key, Tuple<byte[], string> value)
@@ -1119,6 +1181,22 @@ namespace WmcSx
                         PostEvent("videoStep", J.N(next ? 1 : -1));
                     }
                     break;
+            }
+        }
+
+        // The Xbox's own control sounds (the clicks in the video player's controls) stay quiet
+        // while music is playing, like the interface's menu chimes.
+        private void UpdateElementSounds()
+        {
+            try
+            {
+                bool music = player.Music.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
+                var want = music ? ElementSoundPlayerState.Off : ElementSoundPlayerState.Auto;
+                if (ElementSoundPlayer.State != want) ElementSoundPlayer.State = want;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("ElementSoundPlayer", ex);
             }
         }
 

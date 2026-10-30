@@ -113,5 +113,29 @@ window.WmcMock = (function () {
     }
     return Promise.reject(new Error('Mock: unknown command ' + cmd));
   }
-  return { call: call };
+  // A synthetic drum loop (kick, snare, hats over a bass line) so the visualizer has beats to
+  // follow in the browser preview.
+  let demoAudio = null;
+  function audioUrl() {
+    if (demoAudio) return demoAudio;
+    const sr = 22050, secs = 40, n = sr * secs, bpm = 120, beat = 60 / bpm;
+    const pcm = new Int16Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr, b = t / beat, inBeat = (b % 1) * beat, half = ((b * 2) % 1) * beat / 2;
+      const kick = Math.sin(2 * Math.PI * (50 + 90 * Math.exp(-inBeat * 30)) * inBeat) * Math.exp(-inBeat * 9);
+      const snare = (Math.floor(b) % 2 === 1) ? (Math.random() * 2 - 1) * Math.exp(-inBeat * 18) * 0.5 : 0;
+      const hat = (Math.random() * 2 - 1) * Math.exp(-half * 60) * 0.15;
+      const bassNote = [55, 55, 65.4, 49][Math.floor(b / 4) % 4];
+      const bass = Math.sin(2 * Math.PI * bassNote * t) * 0.25;
+      pcm[i] = Math.max(-1, Math.min(1, kick * 0.8 + snare + hat + bass)) * 30000;
+    }
+    const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const w = (o, str) => { for (let k = 0; k < str.length; k++) v.setUint8(o + k, str.charCodeAt(k)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+    new Int16Array(buf, 44).set(pcm);
+    demoAudio = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+    return demoAudio;
+  }
+  return { call: call, audioUrl: audioUrl };
 })();

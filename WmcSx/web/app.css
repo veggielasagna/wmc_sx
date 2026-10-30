@@ -279,3 +279,13 @@ body.at-home #clock { display: none; }
 .logbox { margin: 4px 0 0; max-height: 520px; overflow: auto; padding: 16px 18px; border-radius: 14px; background: rgba(2,10,40,.65); border: 1px solid rgba(170,215,255,.25); font: 15px/1.45 Consolas, "Cascadia Mono", monospace; color: #CFE3FF; white-space: pre-wrap; word-break: break-word; }
 /* List and grid pictures are drawn into a canvas (see lazyArt in app.js) so their memory can be freed. */
 .art > canvas.pic, .thumb > canvas.pic { width: 100%; height: 100%; display: block; border-radius: inherit; }
+
+/* ---------- Music visualizer ---------- */
+.viz { position: absolute; inset: 0; z-index: 22; background: #000; }
+.viz.hidden { display: none; }
+.viz canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.viz-info { position: absolute; left: 90px; bottom: 80px; display: flex; flex-direction: column; gap: 6px; transition: opacity 1.2s ease; text-shadow: 0 2px 14px rgba(0,0,0,.8); }
+.viz-info .t1 { font-size: 46px; font-weight: 800; color: #fff; }
+.viz-info .t2 { font-size: 26px; color: rgba(255,240,225,.85); }
+.viz-hint { position: absolute; right: 90px; bottom: 84px; padding: 12px 22px; border-radius: 18px; font-size: 20px; color: #fff; background: rgba(20,10,4,.45); border: 1px solid rgba(255,230,200,.35); transition: opacity .8s ease; }
+.viz-info.gone, .viz-hint.gone { opacity: 0; }

@@ -196,6 +196,8 @@
     bus: null,
     play(kind, n) {
       if (!prefs.sound) return;
+      // Quiet while music is playing, so the chimes don't play over the song.
+      if (P.state === 'playing') return;
       try {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return;
@@ -720,6 +722,7 @@
   function back() {
     lastBackAt = Date.now();
     if (Viewer.open) { Viewer.close(); return; }
+    if (Viz.open) { Viz.close(); return; }
     if (!stack.length) {
       if (route.name !== 'home') { route = { name: 'home' }; Sfx.play('back'); render({ dir: 'back' }); }
       return;
@@ -762,6 +765,7 @@
   /* ================================================================ Rendering */
   function render(opts) {
     opts = opts || {};
+    if (Viz.open && route.name !== 'now') Viz.close();
     Colls = {};
     loadToken++;
     const screen = $('#screen');
@@ -1076,6 +1080,9 @@
   document.addEventListener('click', e => {
     if (Intro.active) { if (Intro.finish) Intro.finish(); return; }
     if (Viewer.open) { Viewer.close(); return; }
+    if (Viz.open) { Viz.close(); return; }
+    const hint = e.target.closest && e.target.closest('.hint');
+    if (hint && /Visualizer/.test(hint.textContent) && P.track) { Viz.show(); return; }
     const el = e.target.closest && e.target.closest('#screen .f');
     if (!el) return;
     setFocus(el, { noScroll: true, silent: true });
@@ -1084,6 +1091,7 @@
 
   function handle(action) {
     if (Intro.active) { if (Intro.finish) Intro.finish(); return; }
+    if (Viz.open && Viz.handle(action)) return;
     switch (action) {
       case 'up': case 'down': case 'left': case 'right': moveFocus(action); break;
       case 'a':
@@ -1092,6 +1100,7 @@
       case 'b': back(); break;
       case 'x': if (P.track) control('toggle'); break;
       case 'y':
+        if (route.name === 'now') { if (P.track) Viz.show(); break; }
         if (route.name === 'music' || route.name === 'videos') { setView('search'); const s = $('#searchBox'); if (s) { setFocus(s.closest('.f')); s.focus(); } }
         break;
       case 'lb': if (P.track) control('prev'); break;
@@ -1463,7 +1472,7 @@
         '</div></div>' +
         '<div class="upnext glass enter d2"><h3>UP NEXT</h3><div id="npNext">' + upNextHtml() + '</div></div>' +
         '</div>' +
-        '<div class="foot"><span></span>' + hintsHtml([['A', 'Select'], ['X', 'Play/Pause'], ['B', 'Back · keeps playing']]) + '</div>';
+        '<div class="foot"><span></span>' + hintsHtml([['A', 'Select'], ['X', 'Play/Pause'], ['Y', 'Visualizer'], ['B', 'Back · keeps playing']]) + '</div>';
       return { shell: shell };
     },
 
@@ -1578,7 +1587,7 @@
     if (view === 'playback') {
       const toggle = (key, label, sub) => '<button class="toggle f' + (prefs[key] ? ' on' : '') + '" data-act="pref" data-pref="' + key + '" data-k="pref-' + key + '"><span><span style="display:block">' + esc(label) + '</span><span class="dim" style="font-size:18px;font-weight:500">' + esc(sub) + '</span></span><span class="sw"></span></button>';
       return '<div class="panel glass enter d1"><h2>Playback</h2>' +
-        toggle('sound', 'Menu sounds', 'Soft chimes when you move around the menus') +
+        toggle('sound', 'Menu sounds', 'Soft chimes when you move around the menus (quiet while music plays)') +
         toggle('intro', 'Startup animation', 'Play the welcome animation and sound when WMC SX opens') +
         toggle('resume', 'Resume videos', 'Pick up videos where you left off') +
         '</div><div class="panel glass enter d2"><h2>Continue watching</h2><div class="kv">' + Object.keys(Resume.all()).length + ' videos saved partway through.</div><div class="btn-row"><button class="btn glass f" data-act="clearResume">Clear the list</button></div></div>';
@@ -1594,7 +1603,7 @@
     }
     return '<div class="panel glass enter d1"><h2>WMC SX</h2><div class="kv">Version <b id="aboutVersion">' + esc(appInfo.version || '1.0') + '</b> · ' + esc(appInfo.device || '') + '</div>' +
       '<div class="kv">Music, videos and photos from your NAS (DLNA) and USB drives. Music keeps playing in the background while you use other apps in Dev Mode.</div></div>' +
-      '<div class="panel glass enter d2"><h2>Controller</h2><div class="kv"><b>A</b> select · <b>B</b> back · <b>X</b> play/pause · <b>Y</b> search · <b>LB/RB</b> previous/next song · <b>LT/RT</b> back 10s / ahead 30s · <b>Menu</b> Now Playing · <b>View</b> home</div></div>' +
+      '<div class="panel glass enter d2"><h2>Controller</h2><div class="kv"><b>A</b> select · <b>B</b> back · <b>X</b> play/pause · <b>Y</b> search (visualizer on Now Playing) · <b>LB/RB</b> previous/next song · <b>LT/RT</b> back 10s / ahead 30s · <b>Menu</b> Now Playing · <b>View</b> home</div></div>' +
       '<div class="panel glass enter d3"><h2>Diagnostics</h2><div class="kv">If something isn’t working, the app’s log shows what happened, newest first. ' + (appInfo.memory ? 'Memory: ' + esc(appInfo.memory) + '.' : '') + '</div>' +
       '<div class="btn-row"><button class="btn glass f" data-act="showLog" data-k="showLog">' + (logText && !logPrev ? 'Refresh log' : 'Show log') + '</button>' +
       '<button class="btn glass f" data-act="showPrevLog" data-k="showPrevLog">Last time’s log</button></div>' +
@@ -1772,6 +1781,312 @@
       Sfx.play('back');
     }
   };
+
+  /* ================================================================ Music visualizer */
+  // The music plays in the native player, so the page can't listen to it live. Instead, when the
+  // visualizer opens, the song file is read once and mapped out: how loud the bass, middle and
+  // treble are 60 times a second, and where the beats fall. The picture then follows the
+  // player's position, so it moves on the beat.
+  function audioUrl(u) {
+    if (!u) return '';
+    if (!native) return window.WmcMock && WmcMock.audioUrl ? WmcMock.audioUrl(u) : '';
+    if (u.indexOf('usb:') === 0) return 'https://full.wmcsx/usbfile?p=' + encodeURIComponent(u.slice(4));
+    return 'https://full.wmcsx/audio?u=' + encodeURIComponent(u);
+  }
+  const Beats = {
+    cache: new Map(), // song url -> map, or 'none' when it can't be read
+    get(url) { const m = this.cache.get(url); return m && m !== 'none' && !m.then ? m : null; },
+    load(t) {
+      if (!t || !t.url) return Promise.resolve(null);
+      const had = this.cache.get(t.url);
+      if (had) return had.then ? had : Promise.resolve(had === 'none' ? null : had);
+      // Very long tracks would need too much memory to decode on the console.
+      if (t.duration && t.duration > 900) { this.cache.set(t.url, 'none'); return Promise.resolve(null); }
+      const job = this.analyse(t.url).then(m => { this.keep(t.url, m || 'none'); return m; }, e => {
+        nativeLog('visualizer: couldn’t map the beats, ' + (e && e.message ? e.message : e));
+        this.keep(t.url, 'none');
+        return null;
+      });
+      this.cache.set(t.url, job);
+      return job;
+    },
+    keep(url, m) {
+      this.cache.delete(url);
+      this.cache.set(url, m);
+      while (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value);
+    },
+    async analyse(url) {
+      const src = audioUrl(url);
+      if (!src) return null;
+      const res = await fetch(src);
+      if (!res.ok) return null;
+      let data = await res.arrayBuffer();
+      const AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      if (!AC) return null;
+      // Decoding at a low sample rate keeps memory small; beats live in the low end anyway.
+      const audio = await new AC(1, 11025, 11025).decodeAudioData(data);
+      data = null;
+      const sr = audio.sampleRate, n = audio.length;
+      const c0 = audio.getChannelData(0), c1 = audio.numberOfChannels > 1 ? audio.getChannelData(1) : null;
+      const FPS = 60, hop = Math.max(1, Math.round(sr / FPS)), frames = Math.floor(n / hop);
+      const bass = new Float32Array(frames), mid = new Float32Array(frames), high = new Float32Array(frames);
+      const aB = Math.exp(-2 * Math.PI * 150 / sr), aM = Math.exp(-2 * Math.PI * 1800 / sr);
+      let lb = 0, lm = 0, sb = 0, sm = 0, sh = 0, f = 0, k = 0;
+      for (let i = 0; i < n && f < frames; i++) {
+        const x = c1 ? (c0[i] + c1[i]) * 0.5 : c0[i];
+        lb += (1 - aB) * (x - lb);
+        lm += (1 - aM) * (x - lm);
+        sb += lb * lb; sm += (lm - lb) * (lm - lb); sh += (x - lm) * (x - lm);
+        if (++k === hop) { bass[f] = Math.sqrt(sb / hop); mid[f] = Math.sqrt(sm / hop); high[f] = Math.sqrt(sh / hop); f++; k = 0; sb = sm = sh = 0; }
+      }
+      // Scale each band so a loud passage is about 1.
+      const norm = a => {
+        const step = Math.max(1, Math.floor(a.length / 4000)), s = [];
+        for (let i = 0; i < a.length; i += step) s.push(a[i]);
+        s.sort((x, y) => x - y);
+        const top = s[Math.floor(s.length * 0.95)] || 1;
+        for (let i = 0; i < a.length; i++) a[i] = Math.min(1.6, a[i] / top);
+      };
+      norm(bass); norm(mid); norm(high);
+      // Beats: sudden rises in the bass (and a little of the middle), above the local average.
+      const flux = new Float32Array(frames);
+      for (let i = 6; i < frames; i++) {
+        let pb = 0, pm = 0;
+        for (let j = 1; j <= 6; j++) { pb += bass[i - j]; pm += mid[i - j]; }
+        flux[i] = Math.max(0, bass[i] - pb / 6) + 0.35 * Math.max(0, mid[i] - pm / 6);
+      }
+      const beats = [];
+      const W = 30, gap = Math.round(FPS * 0.24);
+      let sum = 0;
+      for (let i = 0; i < Math.min(frames, W * 2); i++) sum += flux[i];
+      let last = -gap;
+      for (let i = 0; i < frames; i++) {
+        const lo = i - W - 1, hi = i + W;
+        if (lo >= 0) sum -= flux[lo];
+        if (hi < frames && hi >= W * 2) sum += flux[hi];
+        const avg = sum / (W * 2);
+        const v = flux[i];
+        if (v > avg * 1.7 + 0.05 && i - last >= gap) {
+          let peak = true;
+          for (let j = Math.max(0, i - 4); j <= Math.min(frames - 1, i + 4); j++) if (flux[j] > v) { peak = false; break; }
+          if (peak) { beats.push(i / FPS); last = i; }
+        }
+      }
+      return { fps: FPS, frames: frames, bass: bass, mid: mid, high: high, beats: new Float32Array(beats) };
+    }
+  };
+
+  const VIZ_STYLES = ['Kaleidoscope', 'Tunnel', 'Liquid'];
+  const VIZ_FRAG = [
+    'precision mediump float;',
+    'uniform vec2 R; uniform float T, bass, mid, high, pulse, wave, mode, hue, travel;',
+    'vec3 pal(float t){ return 0.5 + 0.5 * cos(6.28318 * (t + vec3(0.0, 0.18, 0.42))); }',
+    'float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }',
+    'float n2(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);',
+    '  return mix(mix(h(i), h(i + vec2(1.0, 0.0)), f.x), mix(h(i + vec2(0.0, 1.0)), h(i + vec2(1.0, 1.0)), f.x), f.y); }',
+    'float fbm(vec2 p){ float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { v += a * n2(p); p = p * 2.03 + vec2(1.7, 9.2); a *= 0.5; } return v; }',
+    'void main(){',
+    '  vec2 uv = (gl_FragCoord.xy - 0.5 * R) / R.y;',
+    '  uv *= 1.0 - 0.16 * bass - 0.1 * pulse;',
+    '  float r = length(uv), a = atan(uv.y, uv.x);',
+    '  vec3 c;',
+    '  if (mode < 0.5) {',
+    // Kaleidoscope: an 8-way mirror over swirling, self-warping clouds.
+    '    float k = 8.0, s = 6.28318 / k;',
+    '    float b = mod(a + T * 0.08 + 0.3 * sin(T * 0.13), s); b = abs(b - s * 0.5);',
+    '    vec2 p = r * vec2(cos(b), sin(b)) * (2.2 + mid * 0.6);',
+    '    vec2 q = vec2(fbm(p + T * 0.12), fbm(p - T * 0.1 + 4.0));',
+    '    float f = fbm(p * 1.6 + 2.6 * q + vec2(T * 0.08, -T * 0.05) + bass * 0.6);',
+    '    c = pal(f * 1.6 + hue + r * 0.7 - T * 0.04);',
+    '    c *= 0.35 + 1.1 * f * f + 0.25 * bass;',
+    '    c += pal(hue + 0.5) * pow(max(0.0, 1.0 - abs(f - 0.55) * 9.0), 3.0) * (0.4 + high);',
+    '  } else if (mode < 1.5) {',
+    // Tunnel: flying down a striped, twisting tube.
+    '    float z = 0.42 / (r + 0.03) + travel;',
+    '    float tw = a + 0.35 * sin(z * 0.6 + T * 0.4);',
+    // Noise is read around a circle so there is no seam where the angle wraps.
+    '    vec2 cyl = vec2(cos(tw), sin(tw)) * 1.6;',
+    '    float f = fbm(cyl + vec2(z * 0.9, -z * 0.6));',
+    '    float rings = smoothstep(0.15, 0.85, 0.5 + 0.5 * sin(z * 5.0 + f * 3.0));',
+    '    float spokes = smoothstep(0.2, 0.9, 0.5 + 0.5 * sin(tw * 6.0 + z * 1.5 + T * 0.6));',
+    '    c = pal(z * 0.05 + f * 0.8 + hue + 0.12 * sin(tw)) * (0.25 + 0.9 * rings * (0.4 + 0.6 * spokes) + 0.35 * f);',
+    '    c *= smoothstep(0.0, 0.55, r) * (0.8 + 0.6 * bass);',
+    '    c += vec3(1.0, 0.8, 0.55) * 0.5 * pulse * smoothstep(0.35, 0.0, r);',
+    '  } else {',
+    // Liquid: melting, chromatic plasma.
+    '    vec2 p = uv * (2.4 + mid);',
+    '    for (int i = 1; i < 7; i++) { float fi = float(i);',
+    '      p.x += 0.45 / fi * sin(fi * p.y + T * 0.55 + bass * 1.8 + fi);',
+    '      p.y += 0.45 / fi * cos(fi * p.x + T * 0.45 - high + fi * 1.3); }',
+    '    float f = 0.5 + 0.5 * sin(p.x + p.y);',
+    '    c = vec3(pal(f + hue).r, pal(f + hue + 0.03 + 0.04 * high).g, pal(f + hue + 0.06 + 0.06 * high).b);',
+    '    c *= 0.55 + 0.6 * f + 0.25 * bass;',
+    '  }',
+    // A ring of light rolls out from the middle on every beat.
+    '  float ring = exp(-pow((r - wave * 1.25) * 9.0, 2.0)) * exp(-wave * 2.6);',
+    '  c += pal(hue + 0.15) * ring * 1.4;',
+    '  c += c * pulse * 0.35;',
+    '  c *= 1.0 - 0.55 * smoothstep(0.55, 1.15, length((gl_FragCoord.xy - 0.5 * R) / R.y * vec2(0.9, 1.1)));',
+    '  gl_FragColor = vec4(pow(clamp(c, 0.0, 1.0), vec3(0.92)), 1.0);',
+    '}'
+  ].join('\n');
+
+  const Viz = {
+    open: false, gl: null, prog: null, u: {}, raf: 0, style: Store.get('vizStyle', 0) % VIZ_STYLES.length,
+    map: null, url: null, t0: 0, travel: 0, lastT: 0,
+    lvl: { bass: 0, mid: 0, high: 0 }, hueBase: Math.random(), hueKick: 0, lastBeat: -1,
+    clock: { pos: 0, at: 0 }, infoTimer: 0, hintTimer: 0,
+    show() {
+      if (this.open) return;
+      this.open = true;
+      $('#viz').classList.remove('hidden');
+      if (!this.gl && !this.init()) { this.open = false; $('#viz').classList.add('hidden'); toast('This console can’t draw the visualizer.'); return; }
+      this.t0 = performance.now(); this.lastT = 0; this.perf = { sum: 0, n: 0 };
+      this.sync();
+      this.track(true);
+      this.hint('A next style · X play/pause · LB/RB song · B close', 4500);
+      Sfx.play('select');
+      this.raf = requestAnimationFrame(t => this.frame(t));
+    },
+    close() {
+      if (!this.open) return;
+      this.open = false;
+      cancelAnimationFrame(this.raf);
+      $('#viz').classList.add('hidden');
+      // Give the graphics memory back.
+      try { const ext = this.gl && this.gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) { /* ignore */ }
+      this.gl = null; this.prog = null;
+      Sfx.play('back');
+    },
+    init() {
+      const cv = $('#vizCanvas');
+      const gl = cv.getContext('webgl', { antialias: false, alpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' }) ||
+        cv.getContext('experimental-webgl');
+      if (!gl) return false;
+      const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { nativeLog('visualizer shader: ' + gl.getShaderInfoLog(s)); return null; } return s; };
+      const vs = sh(gl.VERTEX_SHADER, 'attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }');
+      const fs = sh(gl.FRAGMENT_SHADER, VIZ_FRAG);
+      if (!vs || !fs) return false;
+      const pr = gl.createProgram();
+      gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
+      if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) return false;
+      gl.useProgram(pr);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(pr, 'p');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      ['R', 'T', 'bass', 'mid', 'high', 'pulse', 'wave', 'mode', 'hue', 'travel'].forEach(n => { this.u[n] = gl.getUniformLocation(pr, n); });
+      cv.width = Math.round(960 * this.scale); cv.height = Math.round(540 * this.scale);
+      gl.viewport(0, 0, cv.width, cv.height);
+      this.gl = gl; this.prog = pr;
+      return true;
+    },
+    // The player reports its position once a second; in between, count forward ourselves.
+    sync() {
+      const now = performance.now();
+      const est = this.pos(now);
+      const diff = P.position - est;
+      this.clock = { pos: Math.abs(diff) > 0.3 || P.state !== 'playing' ? P.position : est + diff * 0.3, at: now };
+    },
+    pos(now) { return this.clock.pos + (P.state === 'playing' ? (now - this.clock.at) / 1000 : 0); },
+    track(force) {
+      const t = P.track;
+      if (!t) return;
+      if (!force && t.url === this.url) return;
+      this.url = t.url; this.map = null; this.lastBeat = -1;
+      $('#vizTitle').textContent = t.title || '';
+      $('#vizSub').textContent = [t.artist, t.album].filter(Boolean).join(' · ');
+      const info = $('#vizInfo');
+      info.classList.remove('gone');
+      clearTimeout(this.infoTimer);
+      this.infoTimer = setTimeout(() => info.classList.add('gone'), 5000);
+      const url = t.url;
+      this.map = Beats.get(url);
+      if (!this.map) Beats.load(t).then(m => { if (this.url === url) this.map = m; });
+    },
+    hint(text, ms) {
+      const h = $('#vizHint');
+      h.textContent = text; h.classList.remove('gone');
+      clearTimeout(this.hintTimer);
+      this.hintTimer = setTimeout(() => h.classList.add('gone'), ms || 2500);
+    },
+    nextStyle(d) {
+      this.style = (this.style + (d || 1) + VIZ_STYLES.length) % VIZ_STYLES.length;
+      Store.set('vizStyle', this.style);
+      this.hint(VIZ_STYLES[this.style], 1800);
+    },
+    frame(now) {
+      if (!this.open || !this.gl) return;
+      this.raf = requestAnimationFrame(t => this.frame(t));
+      const gl = this.gl, u = this.u;
+      const T = (now - this.t0) / 1000, dt = Math.min(0.1, T - this.lastT);
+      this.lastT = T;
+      this.adapt(dt);
+      const playing = P.state === 'playing';
+      const pos = this.pos(now);
+      let tb, tm, th, pulse = 0, wave = 9;
+      const m = this.map;
+      if (m && m.frames) {
+        const i = Math.max(0, Math.min(m.frames - 1, Math.floor(pos * m.fps)));
+        tb = m.bass[i]; tm = m.mid[i]; th = m.high[i];
+        // Time since the most recent beat.
+        let lo = 0, hi = m.beats.length - 1, b = -1;
+        while (lo <= hi) { const c = (lo + hi) >> 1; if (m.beats[c] <= pos) { b = c; lo = c + 1; } else hi = c - 1; }
+        if (b >= 0) {
+          const since = pos - m.beats[b];
+          pulse = Math.exp(-since * 7); wave = since;
+          if (b !== this.lastBeat) { this.lastBeat = b; this.hueKick += 0.06 + 0.05 * Math.min(1, tb); }
+        }
+      } else {
+        // Song not mapped (yet, or a format the console can't read): drift gently instead.
+        tb = 0.35 + 0.15 * Math.sin(T * 1.7); tm = 0.4 + 0.1 * Math.sin(T * 0.9); th = 0.3;
+      }
+      if (!playing) { tb *= 0.3; tm *= 0.3; th *= 0.3; pulse = 0; }
+      // Fast attack, slower release, so the motion punches without jitter.
+      const ease = (cur, target, up, down) => cur + (target - cur) * Math.min(1, dt * (target > cur ? up : down));
+      const L = this.lvl;
+      L.bass = ease(L.bass, tb, 22, 6); L.mid = ease(L.mid, tm, 14, 5); L.high = ease(L.high, th, 18, 6);
+      this.travel += dt * (0.35 + 1.6 * L.bass + 0.6 * L.mid) * (playing ? 1 : 0.25);
+      gl.uniform2f(u.R, gl.drawingBufferWidth, gl.drawingBufferHeight);
+      gl.uniform1f(u.T, T); gl.uniform1f(u.bass, L.bass); gl.uniform1f(u.mid, L.mid); gl.uniform1f(u.high, L.high);
+      gl.uniform1f(u.pulse, pulse); gl.uniform1f(u.wave, wave); gl.uniform1f(u.mode, this.style);
+      gl.uniform1f(u.hue, this.hueBase + T * 0.012 + this.hueKick); gl.uniform1f(u.travel, this.travel);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    },
+    // Keep it smooth: draw fewer pixels if frames are slow, more again when there's room.
+    // (It's soft and blurry by nature, so a lower resolution barely shows.)
+    perf: { sum: 0, n: 0 }, scale: 1,
+    adapt(dt) {
+      const pf = this.perf;
+      if (!dt) return;
+      pf.sum += dt; pf.n++;
+      if (pf.n < 30 && pf.sum < 1) return;
+      const avg = pf.sum / pf.n;
+      pf.sum = 0; pf.n = 0;
+      let k = this.scale;
+      if (avg > 1 / 45 && k > 0.34) k = Math.max(0.33, k * 0.75);
+      else if (avg < 1 / 58 && k < 1) k = Math.min(1, k * 1.15);
+      if (k === this.scale) return;
+      this.scale = k;
+      const cv = $('#vizCanvas');
+      cv.width = Math.round(960 * k); cv.height = Math.round(540 * k);
+      this.gl.viewport(0, 0, cv.width, cv.height);
+    },
+    handle(action) {
+      switch (action) {
+        case 'b': case 'y': this.close(); return true;
+        case 'a': case 'right': this.nextStyle(1); return true;
+        case 'left': this.nextStyle(-1); return true;
+        case 'up': case 'down': case 'menu': return true;
+        case 'view': this.close(); return false;
+      }
+      return false; // X, LB/RB, LT/RT work as usual
+    }
+  };
+  Bridge.on('player', () => { if (Viz.open) { Viz.sync(); Viz.track(false); } });
+  if (!native) window.WmcDebug = { Viz: Viz, Beats: Beats }; // browser preview only, for testing
 
   /* ================================================================ Clock and scaling */
   function clockText() { return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
