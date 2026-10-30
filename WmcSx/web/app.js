@@ -421,19 +421,26 @@
       if (userChose) toast('Connected to ' + s.name);
     },
 
-    async browseAll(id, max) {
-      max = max || 5000;
-      const out = [];
-      let start = 0;
-      for (let guard = 0; guard < 200 && out.length < max; guard++) {
-        const r = await Bridge.call('browse', { server: this.server.id, id: id, start: start, count: 200 });
+    // Reads a folder page by page. onPage(items, total, done) is called after each page, so big
+    // folders (tens of thousands of photos) can be shown while the rest is still arriving.
+    // Returns false from onPage to stop early.
+    async browsePages(id, onPage, opts) {
+      opts = opts || {};
+      const max = opts.max || 200000, size = opts.size || 200;
+      let start = 0, got = 0;
+      for (let guard = 0; guard < 2000 && got < max; guard++) {
+        const r = await Bridge.call('browse', { server: this.server.id, id: id, start: start, count: size });
         const items = (r && r.items) || [];
-        out.push.apply(out, items);
-        if (!items.length) break;
-        start += items.length;
-        if (r.total && start >= r.total) break;
-        if (!r.total && items.length < 200) break;
+        const step = Math.max(items.length, (r && r.returned) || 0);
+        got += items.length;
+        start += step;
+        const done = !step || (r.total ? start >= r.total : step < size) || got >= max;
+        if (onPage(items, (r && r.total) || got, done) === false || done) break;
       }
+    },
+    async browseAll(id, max) {
+      const out = [];
+      await this.browsePages(id, items => { out.push.apply(out, items); }, { max: max || 200000 });
       return out;
     },
 
@@ -610,18 +617,39 @@
     clear() { Store.set('resume', {}); }
   };
   let currentVideo = null;
-  function playVideo(v, fromStart) {
+  // The list the current video was started from, so left/right on the controller can move to the
+  // previous or next video without leaving the player (like the photo viewer).
+  let videoList = null, videoIdx = 0;
+  const videoSeen = new Map(); // url -> video, so resume info keeps its title after switching
+  function playVideo(v, fromStart, list, idx) {
     const saved = prefs.resume && !fromStart ? Resume.get(v.url) : null;
     currentVideo = v;
+    videoList = list && list.length ? list : null;
+    videoIdx = idx || 0;
+    videoSeen.set(v.url, v);
+    if (videoSeen.size > 60) videoSeen.delete(videoSeen.keys().next().value);
     Sfx.play('select');
-    Bridge.call('playVideo', { url: v.url, title: v.title, key: v.url, start: saved ? saved.position : 0 })
+    Bridge.call('playVideo', { url: v.url, title: v.title, key: v.url, start: saved ? saved.position : 0, index: videoIdx, count: videoList ? videoList.length : 1 })
       .catch(e => toast('Couldn’t play that video. ' + e.message));
   }
+  function playVideoIn(list, i) {
+    const x = list[i];
+    if (!x) return;
+    playVideo({ title: x.title, url: x.url, art: x.art || x.thumb || '', duration: x.duration || 0 }, false, list, i);
+  }
+  Bridge.on('videoStep', d => {
+    if (!videoList || videoList.length < 2) return;
+    const n = videoList.length;
+    playVideoIn(videoList, (videoIdx + (d > 0 ? 1 : -1) + n) % n);
+  });
   Bridge.on('videoClosed', d => {
     if (!d || !d.key) return;
-    const v = currentVideo && currentVideo.url === d.key ? currentVideo : { url: d.key, title: '' };
+    const v = videoSeen.get(d.key) || { url: d.key, title: '' };
     if (d.ended || d.position < 30 || (d.duration && d.position > d.duration - 60)) Resume.remove(d.key);
     else Resume.save(d.key, { position: d.position, duration: d.duration, title: v.title, art: v.art || '', at: Date.now() });
+    if (d.switched) return; // moved on to the next video; the player is still open
+    // Coming back from the full-screen player: ignore stray direction presses for a moment.
+    settleInput(700, 'video closed');
     refreshIf(['videos']);
   });
 
@@ -804,10 +832,48 @@
     el.classList.add('focus');
     const c = el.closest('[data-coll]');
     if (c && Colls[c.dataset.coll]) Colls[c.dataset.coll].last = +el.dataset.i;
-    if (!opts.noScroll) el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: opts.silent ? 'auto' : 'smooth' });
+    if (!opts.noScroll) bringIntoView(el, !opts.silent);
     if (el.dataset.menu != null) onMenuFocus(+el.dataset.menu, opts.silent);
     const menu = $('.home-menu');
     if (menu) menu.classList.toggle('unfocused', el.dataset.menu == null);
+  }
+  // Scrolls a list so the focused item shows, with a quick 110 ms glide. (The browser's own
+  // smooth scrolling takes ~300 ms and falls behind when a direction is held down.)
+  const glides = new Map(); // scroll box -> { to, raf }
+  function scrollBoxOf(el) {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (p.scrollHeight > p.clientHeight + 1) {
+        const oy = getComputedStyle(p).overflowY;
+        if (oy === 'auto' || oy === 'scroll') return p;
+      }
+    }
+    return null;
+  }
+  function bringIntoView(el, animate) {
+    const box = scrollBoxOf(el);
+    if (!box) return;
+    const scale = box.getBoundingClientRect().height / box.offsetHeight || 1; // the stage is scaled to the screen
+    const br = box.getBoundingClientRect(), r = el.getBoundingClientRect();
+    const g = glides.get(box);
+    const from = g ? g.to : box.scrollTop;
+    const margin = 28;
+        const elTop = (r.top - br.top) / scale + box.scrollTop, elBottom = elTop + r.height / scale;
+    let to = from;
+    if (elTop - margin < from) to = elTop - margin;
+    else if (elBottom + margin > from + box.clientHeight) to = elBottom + margin - box.clientHeight;
+    to = Math.max(0, Math.min(box.scrollHeight - box.clientHeight, Math.round(to)));
+    if (to === from && !g) return;
+    if (!animate) { if (g) cancelAnimationFrame(g.raf); glides.delete(box); box.scrollTop = to; return; }
+    const start = box.scrollTop, t0 = performance.now(), dur = 110;
+    if (g) cancelAnimationFrame(g.raf);
+    const job = { to: to, raf: 0 };
+    glides.set(box, job);
+    const step = now => {
+      const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      box.scrollTop = start + (to - start) * e;
+      if (k < 1) job.raf = requestAnimationFrame(step); else glides.delete(box);
+    };
+    job.raf = requestAnimationFrame(step);
   }
   function visible(el) {
     if (!el.offsetParent) return false;
@@ -816,14 +882,31 @@
     return r.width > 0 && r.height > 0;
   }
   function nearest(from, dir) {
+    // First look only at what's on screen (fast even in huge grids); if nothing is there, look
+    // further, e.g. the song list below an artist's albums.
+    return nearestIn(from, dir, true) || nearestIn(from, dir, false);
+  }
+  function nearestIn(from, dir, onScreen) {
     const fr = from.getBoundingClientRect();
     const fromColl = from.closest('[data-coll]');
     let best = null, bestScore = Infinity;
+    const boxRects = new Map();
+    const W = window.innerWidth, H = window.innerHeight;
     $$('#screen .f').forEach(el => {
       if (el === from) return;
       if (fromColl && fromColl.contains(el)) return;
-      if (!visible(el)) return;
+      // Measure first and drop anything off screen or scrolled out of its list, so big grids
+      // don't slow every move down; the style check below only runs for what's left.
       const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      if (onScreen && (r.bottom < 0 || r.top > H || r.right < 0 || r.left > W)) return;
+      const box = onScreen && el.closest('.content');
+      if (box) {
+        let br = boxRects.get(box);
+        if (!br) { br = box.getBoundingClientRect(); boxRects.set(box, br); }
+        if (r.bottom <= br.top + 2 || r.top >= br.bottom - 2) return;
+      }
+      if (!visible(el)) return;
       let primary, secondary;
       if (dir === 'right') { if (r.left < fr.right - 4) return; primary = r.left - fr.right; secondary = Math.max(0, Math.max(r.top - fr.bottom, fr.top - r.bottom)); }
       else if (dir === 'left') { if (r.right > fr.left + 4) return; primary = fr.left - r.right; secondary = Math.max(0, Math.max(r.top - fr.bottom, fr.top - r.bottom)); }
@@ -928,14 +1011,37 @@
   Bridge.on('active', on => {
     appActive = !!on;
     // Forget any buttons that were held while we weren't in front.
-    pad.held = {}; pad.next = {}; pad.ignoreUntilRelease = true;
+    if (on) settleInput(350, 'app active again');
   });
   let lastPoll = { action: null, t: 0 };
   let lastBackAt = 0;
 
+  // When the interface comes back (from the video player or the guide), the engine can deliver
+  // direction presses nobody made: key repeats for a key it thinks is still held, or a stale
+  // controller reading. Those made focus jump a tile or two left or right after closing a video.
+  // For a short moment afterwards, direction input is ignored, and a key repeat only counts when
+  // its first press was seen here. Ignored presses go to the log so any leftovers can be traced.
+  let settleUntil = 0, settleWhy = '';
+  const keysDown = new Set();
+  function settleInput(ms, why) {
+    settleUntil = Date.now() + ms; settleWhy = why;
+    keysDown.clear();
+    pad.held = {}; pad.next = {}; pad.ignoreUntilRelease = true;
+  }
+  const DIRS = { up: 1, down: 1, left: 1, right: 1 };
+  document.addEventListener('keyup', e => keysDown.delete(e.keyCode));
+  window.addEventListener('blur', () => keysDown.clear());
+
   document.addEventListener('keydown', e => {
     if (!isActive()) return;
     const code = e.keyCode;
+    const dirKey = DIRS[KEYMAP[code]];
+    if (dirKey && (Date.now() < settleUntil || (e.repeat && !keysDown.has(code)))) {
+      e.preventDefault();
+      nativeLog('input: ignored key ' + code + (e.repeat ? ' (repeat)' : '') + ' ' + (Date.now() < settleUntil ? 'just after ' + settleWhy : 'with no first press'));
+      return;
+    }
+    if (!e.repeat) keysDown.add(code);
     if (code >= 195 && code <= 218) padKeys = true;
     const input = document.activeElement && document.activeElement.tagName === 'INPUT' ? document.activeElement : null;
     let action = KEYMAP[code];
@@ -1026,13 +1132,14 @@
         pad.ignoreUntilRelease = false;
       }
       Object.keys(active).forEach(a => {
+        if (DIRS[a] && Date.now() < settleUntil) { pad.held[a] = true; pad.next[a] = Infinity; return; }
         if (!pad.held[a]) {
           pad.held[a] = true;
-          pad.next[a] = now + 420;
+          pad.next[a] = now + 300;
           lastPoll = { action: a, t: Date.now() };
           handle(a);
         } else if (REPEATS[a] && now >= pad.next[a]) {
-          pad.next[a] = now + 110;
+          pad.next[a] = now + 85;
           handle(a);
         }
       });
@@ -1083,57 +1190,116 @@
   const loading = () => '<div class="empty glass fade-in"><h2>Loading…</h2><div class="spinner"></div></div>';
 
   /* ================================================================ Folder browsing (DLNA and USB) */
+  const FOLDER_VIEW = /^(folders?|by folder|ordner|dossiers?|carpetas?|cartelle)$/i;
+  const FIRST_PAGE = 400;   // shown straight away; the rest of a big folder streams in behind it
+  // Reads the first part of a folder, then hands later pages to whoever calls onMore().
+  function browseProgressive(id) {
+    return new Promise((resolve, reject) => {
+      const first = [];
+      let resolved = false, listener = null, total = 0;
+      const backlog = [];
+      Lib.browsePages(id, (items, t, done) => {
+        total = t;
+        if (!resolved) {
+          first.push.apply(first, items);
+          if (done || first.length >= FIRST_PAGE) {
+            resolved = true;
+            resolve({ items: first, total: total, done: done, onMore: fn => { listener = fn; backlog.splice(0).forEach(b => fn(b[0], b[1], b[2])); } });
+          }
+          return;
+        }
+        if (listener) return listener(items, t, done);
+        backlog.push([items, t, done]);
+      }, { size: 500 }).catch(e => { if (!resolved) reject(e); else if (listener) listener(null, total, true, e); });
+    });
+  }
+
   function folderLoader(kind, source, id) {
     return async () => {
-      let items;
-      if (source === 'usb') items = await Bridge.call('usbList', { path: id || '' });
+      let first;
+      if (source === 'usb') first = { items: await Bridge.call('usbList', { path: id || '' }), done: true };
       else {
         if (!Lib.server) return libraryGate();
-        let atRoot = false;
-        if (!id) { const roots = await Lib.findRoots(); id = roots[kind === 'music' ? 'music' : kind === 'video' ? 'video' : 'photo'] || '0'; atRoot = true; }
-        items = await Lib.browseAll(id, 5000);
-        if (atRoot) {
+        if (!id) {
+          const roots = await Lib.findRoots();
+          id = roots[kind === 'music' ? 'music' : kind === 'video' ? 'video' : 'photo'] || '0';
           // NAS media servers offer several views (All, Album, Folder…). Start in the folder view.
-          const fv = items.find(x => x.kind === 'container' && /^(folders?|by folder|ordner|dossiers?|carpetas?|cartelle)$/i.test((x.title || '').trim()));
-          if (fv) items = await Lib.browseAll(fv.id, 5000);
+          const top = await Lib.browseAll(id, 2000);
+          const fv = top.find(x => x.kind === 'container' && FOLDER_VIEW.test((x.title || '').trim()));
+          if (fv) id = fv.id;
+          else first = { items: top, done: true };
         }
+        if (!first) first = await browseProgressive(id);
       }
       const want = kind === 'music' ? 'audio' : kind === 'video' ? 'video' : 'image';
-      const folders = items.filter(x => x.kind === 'container');
-      const files = items.filter(x => x.kind === want);
-      if (!folders.length && !files.length) {
+      const all = [], files = [], tracks = [];
+      let folderCount = 0;
+      const take = items => items.forEach(x => {
+        if (x.kind === 'container') { folderCount++; all.push({ folder: x }); }
+        else if (x.kind === want) {
+          // Remember where the file sits among the files, for the photo viewer and playlists.
+          x._n = files.length;
+          files.push(x);
+          if (kind === 'music') tracks.push(slimTrack(x));
+          all.push(x);
+        }
+      });
+      // Folders first, like before; later pages are added in the order the server sends them.
+      take(first.items.filter(x => x.kind === 'container'));
+      take(first.items.filter(x => x.kind !== 'container'));
+      if (!all.length && first.done) {
         if (source === 'usb' && !id) return emptyState('No USB drive found', 'Plug a USB drive or a Windows-formatted iPod into the Xbox. Drives need to be exFAT, FAT32 or NTFS.', '<button class="btn glass f" data-act="refresh">Check again</button>');
         return emptyState('Nothing here', 'This folder doesn’t contain any ' + (kind === 'music' ? 'music' : kind === 'video' ? 'videos' : 'photos') + '.', '');
       }
+      const noun = kind === 'music' ? ['song', 'songs'] : kind === 'video' ? ['video', 'videos'] : ['photo', 'photos'];
+      const countText = (loading) => {
+        const parts = [];
+        if (files.length || !folderCount) parts.push(files.length.toLocaleString() + ' ' + noun[files.length === 1 ? 0 : 1]);
+        if (folderCount) parts.push(folderCount.toLocaleString() + (folderCount === 1 ? ' folder' : ' folders'));
+        return parts.join(' · ') + (loading ? ' · loading more…' : '');
+      };
+      const countLine = '<div class="count-line" id="folderCount">' + esc(countText(!first.done)) + '</div>';
       const openFolder = f => go({ name: 'folder', kind: kind, source: source, id: f.id, title: f.title });
       let html = '';
       if (kind === 'music') {
-        const all = folders.map(f => ({ folder: f })).concat(files);
-        const tracks = files.map(slimTrack);
         let head = '';
         if (files.length) head = '<div class="btn-row" style="margin-bottom:18px"><button class="btn cap f" data-act="playList" data-list="folder">' + SVG.play.replace('<svg', '<svg width="22" height="22" style="fill:#fff"') + 'Play all</button><button class="btn glass f" data-act="playList" data-list="folder" data-shuffle="1">Shuffle</button>' +
           (source === 'usb' && id ? '<button class="btn glass f" data-act="usbScan" data-path="' + esc(id) + '">All music on this drive</button>' : '') + '</div>';
         else if (source === 'usb' && id) head = '<div class="btn-row" style="margin-bottom:18px"><button class="btn glass f" data-act="usbScan" data-path="' + esc(id) + '">All music on this drive</button></div>';
         folderTracks = tracks;
-        html = head + coll('folder', all, {
+        html = countLine + head + coll('folder', all, {
           item: (x, i) => x.folder ? row(x, i, { art: '', icon: x.folder.drive ? 'usb' : 'folder', t1: x.folder.title, t2: x.folder.childCount != null ? x.folder.childCount + ' items' : 'Folder', thumb: true })
             : trackRow(x, i, false),
-          open: (x, i) => x.folder ? openFolder(x.folder) : playTracks(tracks, i - folders.length)
+          open: x => x.folder ? openFolder(x.folder) : playTracks(tracks, x._n)
         });
       } else {
-        const all = folders.map(f => ({ folder: f })).concat(files);
-        const photos = files;
-        html = coll('folder', all, {
+        html = countLine + coll('folder', all, {
           cols: kind === 'video' ? 6 : 5,
           item: (x, i) => x.folder ? card(x, i, { cls: kind === 'video' ? 'poster' : 'photo', icon: x.folder.drive ? 'usb' : 'folder', seed: x.folder.title, t1: x.folder.title, t2: x.folder.childCount != null ? x.folder.childCount + ' items' : 'Folder', art: '' })
             : kind === 'video' ? videoCard({ title: x.title, art: x.art || x.thumb, duration: x.duration, url: x.url }, i)
               : card(x, i, { cls: 'photo', art: x.thumb || x.view || x.art || x.url, seed: x.title, icon: 'photo', t1: x.title }),
-          open: (x, i) => {
+          open: x => {
             if (x.folder) return openFolder(x.folder);
-            if (kind === 'video') return playVideo({ title: x.title, url: x.url, art: x.art || x.thumb });
-            Viewer.show(photos, i - folders.length);
+            if (kind === 'video') return playVideoIn(files, x._n);
+            Viewer.show(files, x._n);
           }
         });
+      }
+      if (!first.done && first.onMore) {
+        // Keep adding the rest of a big folder while this screen is open.
+        const mine = Colls.folder;
+        // Wait until the grid is on screen before adding to it.
+        setTimeout(() => first.onMore((items, total, done, err) => {
+          if (Colls.folder !== mine) return false;   // left this folder: stop reading
+          if (items) {
+            take(items);
+            // Draw the new items if the grid hasn't filled its first screenful yet.
+            if (mine.shown < CHUNK) more('folder', CHUNK - 1);
+          }
+          const el = document.getElementById('folderCount');
+          if (el) el.textContent = countText(!done) + (err ? ' · couldn’t read the rest' : '');
+          if (Viewer.open && Viewer.list === files) Viewer.info();
+        }), 0);
       }
       return html;
     };
@@ -1254,13 +1420,13 @@
         out.content = list.length ? coll('continue', list, {
           cols: 6,
           item: (v, i) => card(v, i, { cls: 'poster', art: v.art, seed: v.title, icon: 'film', t1: v.title || 'Video', t2: fmtTime(v.duration - v.position) + ' left', bar: v.duration ? v.position / v.duration : 0 }),
-          open: v => playVideo(v)
+          open: (v, i) => playVideoIn(list, i)
         }) : emptyState('Nothing to continue', 'Videos you stop partway through will appear here so you can pick up where you left off.', '');
         return out;
       }
       const gate = libraryGate();
       if (gate) { out.content = gate; return out; }
-      out.content = Lib.videos.length ? coll('videos', Lib.videos, { cols: 6, item: videoCard, open: v => playVideo(v) })
+      out.content = Lib.videos.length ? coll('videos', Lib.videos, { cols: 6, item: videoCard, open: (v, i) => playVideoIn(Lib.videos, i) })
         : emptyState('No videos found', 'Your media server didn’t share any videos. You can still browse its folders.', '<button class="btn cap f" data-act="view" data-v="folders">Browse folders</button>');
       return out;
     },
@@ -1363,7 +1529,7 @@
     if (gate) return gate;
     const res = Lib.search(q);
     if (kind === 'videos') {
-      return res.videos.length ? coll('searchVideos', res.videos, { cols: 6, item: videoCard, open: v => playVideo(v) }) : emptyState('No matches', 'No videos match “' + q + '”.', '');
+      return res.videos.length ? coll('searchVideos', res.videos, { cols: 6, item: videoCard, open: (v, i) => playVideoIn(res.videos, i) }) : emptyState('No matches', 'No videos match “' + q + '”.', '');
     }
     searchTracks = res.tracks;
     let h = '';
@@ -1573,13 +1739,18 @@
       loadFull();
       this.front = next;
       if (first) old.classList.remove('show');
-      const info = $('#viewerInfo');
-      info.textContent = (this.i + 1) + ' of ' + this.list.length + ' · ' + (it.title || '') + (this.timer ? ' · Slideshow' : '') + ' · A slideshow · B close';
+      const info = this.info();
       info.classList.remove('gone');
       clearTimeout(this.infoTimer);
       this.infoTimer = setTimeout(() => info.classList.add('gone'), 3000);
       const pre = this.list[this.i + 1];
       if (pre) { const pu = pre.view || pre.url; const p = new Image(); p.src = mediaUrl(pu) || pu; }
+    },
+    // "12 of 30,214 · IMG_1012". The total grows while a big folder is still loading.
+    info() {
+      const el = $('#viewerInfo'), it = this.list[this.i];
+      if (it) el.textContent = (this.i + 1).toLocaleString() + ' of ' + this.list.length.toLocaleString() + ' · ' + (it.title || '') + (this.timer ? ' · Slideshow' : '') + ' · A slideshow · B close';
+      return el;
     },
     step(d) {
       if (!this.list.length) return;

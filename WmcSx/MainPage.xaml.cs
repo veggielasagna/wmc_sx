@@ -49,6 +49,9 @@ namespace WmcSx
         private double videoStart;
         private string videoUrl;
         private string videoTitle;
+        private int videoIndex;
+        private int videoCount = 1;
+        private DateTime lastVideoStep = DateTime.MinValue;
         private HttpRangeStream videoRange;
         private readonly System.Diagnostics.Stopwatch videoClock = new System.Diagnostics.Stopwatch();
         private readonly DispatcherTimer tick = new DispatcherTimer();
@@ -903,15 +906,30 @@ namespace WmcSx
         private async Task OpenVideo(JsonObject a)
         {
             string url = J.Str(a, "url", "");
+            if (videoOpen)
+            {
+                // Moving to the previous or next video: save where the current one got to first.
+                ReportVideo(false, true);
+                video.Pause();
+                video.Source = null;
+                if (videoRange != null)
+                {
+                    videoRange.Dispose();
+                    videoRange = null;
+                }
+            }
             videoUrl = url;
             videoKey = J.Str(a, "key", url);
             videoStart = J.Num(a, "start", 0);
             videoTitle = J.Str(a, "title", "");
+            videoIndex = (int)J.Num(a, "index", 0);
+            videoCount = Math.Max(1, (int)J.Num(a, "count", 1));
             videoClock.Restart();
 
             player.Pause();
             videoOpen = true;
-            VideoLoadingTitle.Text = videoTitle;
+            VideoLoadingTitle.Text = videoTitle + (videoCount > 1 ? "   ·   " + (videoIndex + 1) + " of " + videoCount : "");
+            VideoLoadingHint.Text = videoCount > 1 ? "Left / right for the previous or next video  ·  B to cancel" : "Press B to cancel";
             VideoLoading.Visibility = Visibility.Visible;
             VideoView.Visibility = Visibility.Visible;
             if (web != null) web.Visibility = Visibility.Collapsed;
@@ -1024,12 +1042,32 @@ namespace WmcSx
                 web.Visibility = Visibility.Visible;
                 web.Focus(FocusState.Programmatic);
             }
+            SendVideoReport(ended, false, pos, dur);
+        }
 
+        /// <summary>Tells the interface where the current video got to (for Continue watching).</summary>
+        private void ReportVideo(bool ended, bool switched)
+        {
+            double pos = 0, dur = 0;
+            try
+            {
+                pos = video.PlaybackSession.Position.TotalSeconds;
+                dur = video.PlaybackSession.NaturalDuration.TotalSeconds;
+            }
+            catch
+            {
+            }
+            SendVideoReport(ended, switched, pos, dur);
+        }
+
+        private void SendVideoReport(bool ended, bool switched, double pos, double dur)
+        {
             var o = new JsonObject();
-            o["key"] = J.S(videoKey);
+            o["key"] = J.S(videoKey ?? "");
             o["position"] = J.N(ended ? 0 : pos);
             o["duration"] = J.N(dur);
             o["ended"] = J.B(ended);
+            o["switched"] = J.B(switched);
             PostEvent("videoClosed", o);
         }
 
@@ -1063,6 +1101,23 @@ namespace WmcSx
                 case VirtualKey.PageDown:
                     SkipVideo(30);
                     e.Handled = true;
+                    break;
+                // D-pad left/right: previous/next video in the folder or list, like photos.
+                // (The left stick still moves around the on-screen controls.)
+                case VirtualKey.GamepadDPadLeft:
+                case VirtualKey.Left:
+                case VirtualKey.GamepadDPadRight:
+                case VirtualKey.Right:
+                    if (videoCount > 1)
+                    {
+                        e.Handled = true;
+                        // One step per press, and not faster than the player can switch.
+                        if (e.KeyStatus.WasKeyDown || (DateTime.UtcNow - lastVideoStep).TotalMilliseconds < 400) break;
+                        lastVideoStep = DateTime.UtcNow;
+                        bool next = e.Key == VirtualKey.GamepadDPadRight || e.Key == VirtualKey.Right;
+                        Log.Write("Video: " + (next ? "next" : "previous") + " video");
+                        PostEvent("videoStep", J.N(next ? 1 : -1));
+                    }
                     break;
             }
         }

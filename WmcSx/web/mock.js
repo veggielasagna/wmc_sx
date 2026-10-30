@@ -42,6 +42,9 @@ window.WmcMock = (function () {
   for (let i = 0; i < 18; i++) {
     add('v-f', { id: 'vid' + i, kind: 'video', title: 'Home video ' + (i + 1), duration: 1200 + i * 300, url: 'http://nas/video' + i + '.mp4', art: '' });
   }
+  // A very big folder, to check folders over 5,000 items load completely.
+  const big = add('p-f', { id: 'pbig', kind: 'container', title: 'Phone backup', childCount: 30214 });
+  for (let i = 0; i < 30214; i++) add(big.id, { id: 'pb' + i, kind: 'image', title: 'IMG_' + (10000 + i), url: '', thumb: '' });
   for (let f = 0; f < 3; f++) {
     const pf = add('p-f', { id: 'pf' + f, kind: 'container', title: ['Vacation', 'Family', 'Screenshots'][f], childCount: 12 });
     for (let i = 0; i < 12; i++) add(pf.id, { id: 'ph' + f + '-' + i, kind: 'image', title: 'IMG_' + (1000 + f * 100 + i), url: '', thumb: '' });
