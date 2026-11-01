@@ -2098,16 +2098,45 @@
       this.open = false;
       cancelAnimationFrame(this.raf);
       $('#viz').classList.add('hidden');
-      // Give the graphics memory back.
-      try { const ext = this.gl && this.gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) { /* ignore */ }
-      this.gl = null; this.progs = null; this.targets = null;
+      this.release();
       Sfx.play('back');
     },
+    // Give the graphics memory back. A canvas whose context was let go never gets a working one
+    // again (that's why the visualizer only opened once in 1.0.27), so it's swapped for a new canvas.
+    release() {
+      try { const ext = this.gl && this.gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) { /* ignore */ }
+      this.gl = null; this.progs = null; this.targets = null;
+      this.freshCanvas();
+    },
+    freshCanvas() {
+      const old = $('#vizCanvas'), c = document.createElement('canvas');
+      c.id = 'vizCanvas'; c.width = 960; c.height = 540;
+      old.parentNode.replaceChild(c, old);
+      return c;
+    },
+    getContext(cv) {
+      const o = { antialias: false, alpha: false, depth: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' };
+      return cv.getContext('webgl', o) || cv.getContext('experimental-webgl', o);
+    },
     init() {
-      const cv = $('#vizCanvas');
-      const gl = cv.getContext('webgl', { antialias: false, alpha: false, depth: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' }) ||
-        cv.getContext('experimental-webgl');
-      if (!gl) return false;
+      let cv = $('#vizCanvas');
+      let gl = this.getContext(cv);
+      if (!gl || gl.isContextLost()) { cv = this.freshCanvas(); gl = this.getContext(cv); }
+      if (!gl) { nativeLog('visualizer: WebGL not available'); return false; }
+      // The console can take the graphics away while it runs (for example when memory is short).
+      // Start again on a new canvas instead of freezing.
+      cv.addEventListener('webglcontextlost', e => {
+        e.preventDefault();
+        if (!this.open || this.gl !== gl) return;
+        nativeLog('visualizer: graphics context lost, restarting');
+        cancelAnimationFrame(this.raf);
+        this.release();
+        setTimeout(() => {
+          if (!this.open) return;
+          if (this.init()) this.raf = requestAnimationFrame(t => this.frame(t));
+          else { this.open = false; $('#viz').classList.add('hidden'); toast('The visualizer stopped because the console needed its graphics memory.'); }
+        }, 400);
+      });
       const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { nativeLog('visualizer shader: ' + gl.getShaderInfoLog(s)); return null; } return s; };
       const vs = sh(gl.VERTEX_SHADER, 'attribute vec2 p; varying vec2 v; void main(){ v = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }');
       const link = (fsrc, names) => {
