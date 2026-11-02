@@ -20,7 +20,7 @@
       try { localStorage.setItem('wmcsx.' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ }
     }
   };
-  const prefs = Object.assign({ sound: true, resume: true, intro: true }, Store.get('prefs', {}));
+  const prefs = Object.assign({ sound: true, resume: true, intro: true, saver: true, saverMin: 3, slideMusic: 'all' }, Store.get('prefs', {}));
   const savePrefs = () => Store.set('prefs', prefs);
 
   /* ================================================================ Bridge to the native app */
@@ -1169,6 +1169,7 @@
     if (!el || el === cur) return;
     if (Date.now() < settleUntil) { traceInput('ignored pointer at ' + Math.round(p.x) + ',' + Math.round(p.y)); return; }
     lastInput = { what: 'pointer at ' + Math.round(p.x) + ',' + Math.round(p.y), t: Date.now() };
+    lastActivity = Date.now();
     setFocus(el, { noScroll: true, silent: true });
   });
   document.addEventListener('click', e => {
@@ -1184,7 +1185,10 @@
   });
 
   function handle(action) {
+    lastActivity = Date.now();
     if (Intro.active) { if (Intro.finish) Intro.finish(); return; }
+    // The screensaver goes away on any button and the press does nothing else.
+    if (Viz.open && Viz.saver) { Viz.close(); return; }
     if (Viz.open && Viz.handle(action)) return;
     switch (action) {
       case 'up': case 'down': case 'left': case 'right': moveFocus(action); break;
@@ -1205,6 +1209,19 @@
       case 'view': home(); break;
     }
   }
+
+  /* ---------------- Visualizer screensaver */
+  // After a few minutes of music with no button presses, the visualizer takes over the screen.
+  let lastActivity = Date.now();
+  function checkSaver() {
+    if (!prefs.saver || Viz.open || Viewer.open || Intro.active || !isActive()) return;
+    if (P.state !== 'playing' || !P.track) return;
+    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+    if (Date.now() - lastActivity < (prefs.saverMin || 3) * 60000) return;
+    Viz.show({ saver: true });
+  }
+  setInterval(checkSaver, 5000);
+  Bridge.on('active', on => { if (on) lastActivity = Date.now(); });
 
   Bridge.on('back', () => {
     if (!isActive()) return;
@@ -1681,11 +1698,18 @@
         '<div class="field"><input class="f" id="ipBox" data-k="ip" placeholder="192.168.1.20" inputmode="decimal" value="' + esc(Store.get('lastIp', '')) + '"><button class="btn glass f" data-act="probe" data-k="probe">Connect</button></div></div>';
     }
     if (view === 'playback') {
+      // A setting with a few values: A steps to the next one.
+      const choice = (key, label, opts) => {
+        const cur = opts.find(o => String(o[0]) === String(prefs[key])) || opts[0];
+        return '<button class="toggle f" data-act="choice" data-pref="' + key + '" data-k="pref-' + key + '" data-opts="' + esc(JSON.stringify(opts)) + '"><span>' + esc(label) + '</span><span class="val">' + esc(cur[1]) + ' ›</span></button>';
+      };
       const toggle = (key, label, sub) => '<button class="toggle f' + (prefs[key] ? ' on' : '') + '" data-act="pref" data-pref="' + key + '" data-k="pref-' + key + '"><span><span style="display:block">' + esc(label) + '</span><span class="dim" style="font-size:18px;font-weight:500">' + esc(sub) + '</span></span><span class="sw"></span></button>';
       return '<div class="panel glass enter d1"><h2>Playback</h2>' +
         toggle('sound', 'Menu sounds', 'Soft chimes when you move around the menus (quiet while music plays)') +
         toggle('intro', 'Startup animation', 'Play the welcome animation and sound when WMC SX opens') +
         toggle('resume', 'Resume videos', 'Pick up videos where you left off') +
+        toggle('saver', 'Visualizer screensaver', 'Shows the visualizer when music has played for a while with no button presses') +
+        choice('saverMin', 'Screensaver starts after', [[1, '1 minute'], [3, '3 minutes'], [5, '5 minutes'], [10, '10 minutes']]) +
         '</div><div class="panel glass enter d2"><h2>Continue watching</h2><div class="kv">' + Object.keys(Resume.all()).length + ' videos saved partway through.</div><div class="btn-row"><button class="btn glass f" data-act="clearResume">Clear the list</button></div></div>';
     }
     if (view === 'colors') {
@@ -1772,6 +1796,14 @@
       const t = Theme.apply(el.dataset.theme);
       prefs.theme = t.id; savePrefs();
       $$('.swatch').forEach(b => { const on = b.dataset.theme === t.id; b.classList.toggle('on', on); b.querySelector('.sw-on').textContent = on ? 'In use' : ''; });
+    },
+    choice: el => {
+      const k = el.dataset.pref, opts = JSON.parse(el.dataset.opts);
+      const i = opts.findIndex(o => String(o[0]) === String(prefs[k]));
+      const next = opts[(i + 1) % opts.length];
+      prefs[k] = next[0]; savePrefs();
+      el.querySelector('.val').textContent = next[1] + ' ›';
+      Sfx.play('move', i + 1);
     },
     pref: el => { const k = el.dataset.pref; prefs[k] = !prefs[k]; savePrefs(); el.classList.toggle('on', prefs[k]); if (k === 'sound' && prefs.sound) Sfx.play('select'); },
     showLog: () => showLogText(false),
@@ -2080,17 +2112,20 @@
     lvl: { bass: 0, mid: 0, high: 0 }, hueBase: Math.random(), lastBeat: -1, fakeBeat: 0,
     phys: null, targets: null, front: 0,
     clock: { pos: 0, at: 0 }, infoTimer: 0, hintTimer: 0,
-    show() {
+    show(opts) {
       if (this.open) return;
       this.open = true;
+      this.saver = !!(opts && opts.saver);
       $('#viz').classList.remove('hidden');
       if (!this.gl && !this.init()) { this.open = false; $('#viz').classList.add('hidden'); toast('This console can’t draw the visualizer.'); return; }
       this.t0 = performance.now(); this.lastT = 0; this.perf = { sum: 0, n: 0 };
       this.phys = { rotVel: 0, dir: 1, zoomKick: 0, hueKick: 0, beats: 0, seg: 8 };
       this.sync();
       this.track(true);
-      this.hint('A next style · X play/pause · LB/RB song · B close', 4500);
-      Sfx.play('select');
+      if (this.saver) this.hint('Press any button to go back', 4000);
+      else { this.hint('A next style · X play/pause · LB/RB song · B close', 4500); Sfx.play('select'); }
+      Bridge.call('keepAwake', { on: true }).catch(() => {});
+      if (this.saver) nativeLog('visualizer: screensaver started');
       this.raf = requestAnimationFrame(t => this.frame(t));
     },
     close() {
@@ -2099,7 +2134,10 @@
       cancelAnimationFrame(this.raf);
       $('#viz').classList.add('hidden');
       this.release();
-      Sfx.play('back');
+      Bridge.call('keepAwake', { on: false }).catch(() => {});
+      lastActivity = Date.now();
+      if (!this.saver) Sfx.play('back');
+      this.saver = false;
     },
     // Give the graphics memory back. A canvas whose context was let go never gets a working one
     // again (that's why the visualizer only opened once in 1.0.27), so it's swapped for a new canvas.

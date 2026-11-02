@@ -102,6 +102,7 @@ window.WmcMock = (function () {
         emit('player', state());
         return wait(state());
       case 'state': return wait(state());
+      case 'keepAwake': return wait(null);
       case 'playVideo':
         setTimeout(() => window.WmcBridge.emit('toast', 'Browser preview: the Xbox would play “' + a.title + '” full screen now.'), 50);
         setTimeout(() => emit('videoClosed', { key: a.key, position: 600, duration: 2400, ended: false }), 1500);

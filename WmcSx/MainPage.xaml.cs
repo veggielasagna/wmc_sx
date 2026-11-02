@@ -53,6 +53,9 @@ namespace WmcSx
         private int videoCount = 1;
         private DateTime lastVideoStep = DateTime.MinValue;
         private DateTime videoClosedAt = DateTime.MinValue;
+        // Keeps the TV from dimming while the visualizer is on screen.
+        private Windows.System.Display.DisplayRequest displayRequest;
+        private bool keepingAwake;
         private HttpRangeStream videoRange;
         private readonly System.Diagnostics.Stopwatch videoClock = new System.Diagnostics.Stopwatch();
         private readonly DispatcherTimer tick = new DispatcherTimer();
@@ -416,6 +419,9 @@ namespace WmcSx
                     return null;
                 case "log":
                     Log.Write("Interface: " + J.Str(a, "text", ""));
+                    return null;
+                case "keepAwake":
+                    KeepAwake(J.Bool(a, "on"));
                     return null;
                 case "theme":
                 {
@@ -1428,8 +1434,24 @@ namespace WmcSx
             }
         }
 
+        private void KeepAwake(bool on)
+        {
+            try
+            {
+                if (on == keepingAwake) return;
+                if (displayRequest == null) displayRequest = new Windows.System.Display.DisplayRequest();
+                if (on) displayRequest.RequestActive(); else displayRequest.RequestRelease();
+                keepingAwake = on;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("KeepAwake", ex);
+            }
+        }
+
         public async Task OnEnteredBackgroundAsync()
         {
+            KeepAwake(false);
             inBackground = true;
             Log.Write("Entered background, music=" + HasMusic() + ", " + MemoryText());
             if (videoOpen) CloseVideo(false);
