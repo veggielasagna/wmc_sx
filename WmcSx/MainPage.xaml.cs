@@ -497,6 +497,18 @@ namespace WmcSx
                         }
                     }
                 }
+                else if (path == "/vthumb")
+                {
+                    // A frame from a video that has no poster of its own.
+                    string url, sz;
+                    uint size = 480;
+                    if (query.TryGetValue("s", out sz)) uint.TryParse(sz, out size);
+                    if (query.TryGetValue("u", out url))
+                    {
+                        var bytes = await FetchVideoFrame(url, size);
+                        if (bytes != null) stream = await ToStream(bytes);
+                    }
+                }
                 else if (path == "/audio")
                 {
                     // The song file, so the music visualizer can work out where the beats are.
@@ -639,6 +651,105 @@ namespace WmcSx
             if (bytes.Length < 600 * 1024) Remember(key, result);
             if (size > 0) SaveThumb(file, bytes);
             return result;
+        }
+
+        // ---------------------------------------------------------------- Video thumbnails
+
+        // Many videos on the NAS have no poster. Each one is opened in a hidden, muted player, a
+        // frame from a little way in is copied into a small JPEG, and that is kept with the other
+        // tile pictures so it only happens once per video. One at a time, and never while a video
+        // is playing or the app is in the background.
+        private static readonly System.Threading.SemaphoreSlim frameGate = new System.Threading.SemaphoreSlim(1, 1);
+        private static readonly HashSet<string> frameFailed = new HashSet<string>();
+        private static int framesMade;
+
+        private async Task<byte[]> FetchVideoFrame(string url, uint size)
+        {
+            if (size == 0 || size > 1080) size = 480;
+            string file = Hash("frame|" + size + "|" + url) + ".img";
+            var saved = await ReadThumb(file);
+            if (saved != null) return saved;
+            lock (frameFailed) { if (frameFailed.Contains(url)) return null; }
+            if (videoOpen || inBackground) return null;
+            await frameGate.WaitAsync();
+            try
+            {
+                if (videoOpen || inBackground) return null;
+                saved = await ReadThumb(file);
+                if (saved != null) return saved;
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var bytes = await GrabFrame(url, size);
+                if (bytes == null)
+                {
+                    lock (frameFailed) frameFailed.Add(url);
+                    Log.Write("Video frame: none for " + url.Substring(url.LastIndexOf('/') + 1) + " after " + clock.ElapsedMilliseconds + " ms");
+                    return null;
+                }
+                SaveThumb(file, bytes);
+                framesMade++;
+                if (framesMade == 1 || framesMade % 25 == 0) Log.Write("Video frames made: " + framesMade + " (last in " + clock.ElapsedMilliseconds + " ms), " + MemoryText());
+                return bytes;
+            }
+            finally
+            {
+                frameGate.Release();
+            }
+        }
+
+        private static async Task<byte[]> GrabFrame(string url, uint size)
+        {
+            var mp = new MediaPlayer();
+            try
+            {
+                mp.IsVideoFrameServerEnabled = true;
+                mp.IsMuted = true;
+                mp.AutoPlay = false;
+                mp.CommandManager.IsEnabled = false; // keep it out of the console's media controls
+                var opened = new TaskCompletionSource<bool>();
+                mp.MediaOpened += (s, e) => opened.TrySetResult(true);
+                mp.MediaFailed += (s, e) => opened.TrySetResult(false);
+                mp.Source = MediaSource.CreateFromUri(new Uri(url));
+                if (await Task.WhenAny(opened.Task, Task.Delay(15000)) != opened.Task || !opened.Task.Result) return null;
+
+                var session = mp.PlaybackSession;
+                double dur = session.NaturalDuration.TotalSeconds;
+                double at = dur > 0 ? Math.Min(Math.Max(dur * 0.15, 1), 60) : 1;
+                if (dur > 0 && at > dur - 0.5) at = dur / 2;
+
+                // Frames arrive while it plays (muted); take the second one after the jump, as the
+                // first can still be from before it.
+                var ready = new TaskCompletionSource<bool>();
+                int afterSeek = -1;
+                session.SeekCompleted += (s, e) => { afterSeek = 0; };
+                mp.VideoFrameAvailable += (s, e) => { if (afterSeek >= 0 && ++afterSeek >= 2) ready.TrySetResult(true); };
+                session.Position = TimeSpan.FromSeconds(at);
+                mp.Play();
+                if (await Task.WhenAny(ready.Task, Task.Delay(10000)) != ready.Task) return null;
+                mp.Pause();
+
+                uint vw = session.NaturalVideoWidth, vh = session.NaturalVideoHeight;
+                if (vw == 0 || vh == 0) return null;
+                double k = Math.Min(1.0, (double)size / Math.Max(vw, vh));
+                int w = Math.Max(2, (int)(vw * k) & ~1), h = Math.Max(2, (int)(vh * k) & ~1);
+                using (var frame = Windows.Media.VideoFrame.CreateAsDirect3D11SurfaceBacked(Windows.Graphics.DirectX.DirectXPixelFormat.B8G8R8A8UIntNormalized, w, h))
+                {
+                    mp.CopyFrameToVideoSurface(frame.Direct3DSurface);
+                    using (var bmp = await Windows.Graphics.Imaging.SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Direct3DSurface, Windows.Graphics.Imaging.BitmapAlphaMode.Ignore))
+                    {
+                        return await EncodeJpeg(bmp);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write("Video frame: " + ex.Message);
+                return null;
+            }
+            finally
+            {
+                try { mp.Source = null; } catch { }
+                mp.Dispose();
+            }
         }
 
         // One song at a time, and nothing huge (a long FLAC can be 100+ MB).

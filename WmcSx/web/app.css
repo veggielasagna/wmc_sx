@@ -279,7 +279,8 @@ body.at-home #clock { display: none; }
 
 .logbox { margin: 4px 0 0; max-height: 520px; overflow: auto; padding: 16px 18px; border-radius: 14px; background: rgba(var(--t91),.65); border: 1px solid rgba(var(--t35),.25); font: 15px/1.45 Consolas, "Cascadia Mono", monospace; color: rgb(var(--t78)); white-space: pre-wrap; word-break: break-word; }
 /* List and grid pictures are drawn into a canvas (see lazyArt in app.js) so their memory can be freed. */
-.art > canvas.pic, .thumb > canvas.pic { width: 100%; height: 100%; display: block; border-radius: inherit; }
+.art > canvas.pic, .thumb > canvas.pic { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: inherit; }
+.row .thumb { position: relative; }
 
 /* ---------- Music visualizer ---------- */
 .viz { position: absolute; inset: 0; z-index: 22; background: #000; }

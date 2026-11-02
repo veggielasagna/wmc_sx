@@ -162,5 +162,7 @@ window.WmcMock = (function () {
     demoAudio = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
     return demoAudio;
   }
-  return { call: call, audioUrl: audioUrl };
+  // A made-up "frame" for videos (the Xbox grabs a real one from the video).
+  function frame(u) { let h = 0; for (let i = 0; i < u.length; i++) h = (h * 31 + u.charCodeAt(i)) | 0; return photo(Math.abs(h)); }
+  return { call: call, audioUrl: audioUrl, frame: frame };
 })();

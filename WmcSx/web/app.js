@@ -72,6 +72,8 @@
     if (!u) return '';
     if (u.indexOf('usbthumb:') === 0) return native ? 'https://media.wmcsx/usbthumb?p=' + encodeURIComponent(u.slice(9)) : '';
     if (u.indexOf('usb:') === 0) return native ? (size ? 'https://media.wmcsx/usbthumb?p=' : 'https://full.wmcsx/usbfile?p=') + encodeURIComponent(u.slice(4)) : '';
+    // A frame from the video itself, for videos the server has no poster for.
+    if (u.indexOf('vthumb:') === 0) return native ? 'https://media.wmcsx/vthumb?u=' + encodeURIComponent(u.slice(7)) + '&s=' + (size || ART_SIZE) : (window.WmcMock && WmcMock.frame ? WmcMock.frame(u.slice(7)) : '');
     if (!native) return u;
     // Full-size pictures use their own address so they never queue behind tiles.
     return (size ? 'https://media.wmcsx/img?u=' : 'https://full.wmcsx/img?u=') + encodeURIComponent(u) + (size ? '&s=' + size : '');
@@ -789,7 +791,7 @@
   function playVideoIn(list, i) {
     const x = list[i];
     if (!x) return;
-    playVideo({ title: x.title, url: x.url, art: x.art || x.thumb || '', duration: x.duration || 0 }, false, list, i);
+    playVideo({ title: x.title, url: x.url, art: videoArt(x), duration: x.duration || 0 }, false, list, i);
   }
   Bridge.on('videoStep', d => {
     if (!videoList || videoList.length < 2) return;
@@ -836,7 +838,9 @@
   function card(it, i, o) {
     o = o || {};
     const icon = o.icon ? ico(o.icon) : '';
-    return '<button class="card f ' + (o.cls || '') + '" data-i="' + i + '"><span class="art" ' + lazyArt(o.art, o.seed || o.t1) + '>' + (o.art ? '' : icon) + '</span>' +
+    // Video frames can take a moment (or not exist), so the icon stays underneath until one arrives.
+    const keepIcon = !o.art || o.art.indexOf('vthumb:') === 0;
+    return '<button class="card f ' + (o.cls || '') + '" data-i="' + i + '"><span class="art" ' + lazyArt(o.art, o.seed || o.t1) + '>' + (keepIcon ? icon : '') + '</span>' +
       '<span class="t1">' + esc(o.t1) + '</span>' + (o.t2 != null ? '<span class="t2">' + esc(o.t2) + '</span>' : '') + (o.bar != null ? '<span class="bar"><i style="width:' + Math.round(o.bar * 100) + '%"></i></span>' : '') + '</button>';
   }
   function row(it, i, o) {
@@ -849,7 +853,8 @@
   }
   const trackRow = (t, i, numbered) => row(t, i, { n: numbered ? (t.track || i + 1) : i + 1, art: t.art, seed: t.album, t1: t.title, t2: [t.artist, t.album].filter(Boolean).join(' · '), dur: t.duration ? fmtTime(t.duration) : '' });
   const albumCard = (a, i) => card(a, i, { art: a.art, seed: a.title, icon: 'note', t1: a.title, t2: a.artist });
-  const videoCard = (v, i) => card(v, i, { cls: 'poster', art: v.art, seed: v.title, icon: 'film', t1: v.title, t2: v.duration ? fmtTime(v.duration) : '' });
+  const videoArt = v => v.art || v.thumb || (v.url && v.url.indexOf('usb:') !== 0 ? 'vthumb:' + v.url : '');
+  const videoCard = (v, i) => card(v, i, { cls: 'poster', art: videoArt(v), seed: v.title, icon: 'film', t1: v.title, t2: v.duration ? fmtTime(v.duration) : '' });
 
   /* ================================================================ Navigation */
   const SECTIONS = [
@@ -1628,7 +1633,7 @@
         const list = Object.keys(all).map(u => Object.assign({ url: u }, all[u])).sort((a, b) => b.at - a.at);
         out.content = list.length ? coll('continue', list, {
           cols: 6,
-          item: (v, i) => card(v, i, { cls: 'poster', art: v.art, seed: v.title, icon: 'film', t1: v.title || 'Video', t2: fmtTime(v.duration - v.position) + ' left', bar: v.duration ? v.position / v.duration : 0 }),
+          item: (v, i) => card(v, i, { cls: 'poster', art: videoArt(v), seed: v.title, icon: 'film', t1: v.title || 'Video', t2: fmtTime(v.duration - v.position) + ' left', bar: v.duration ? v.position / v.duration : 0 }),
           open: (v, i) => playVideoIn(list, i)
         }) : emptyState('Nothing to continue', 'Videos you stop partway through will appear here so you can pick up where you left off.', '');
         return out;
