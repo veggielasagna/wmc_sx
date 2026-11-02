@@ -979,8 +979,9 @@
     } else if (key && key.k) {
       el = $('#screen [data-k="' + key.k + '"]');
     }
-    if (!el && preferContent) el = $('#content .f');
-    if (!el) el = $('#screen [data-autofocus]') || $('#content .f') || $('#screen .f');
+    // Controls marked "skip" (like the photo view switch) never take the first focus.
+    if (!el && preferContent) el = $('#content .f:not(.skip)') || $('#content .f');
+    if (!el) el = $('#screen [data-autofocus]') || $('#content .f:not(.skip)') || $('#content .f') || $('#screen .f');
     if (el) setFocus(el, { silent: true, why: 'screen redrawn' });
   }
 
@@ -1547,8 +1548,8 @@
   const r_title = id => (route.name === 'folder' && route.id === id ? route.title : '') || 'Photos';
   function viewSwitch(mode) {
     return '<div class="btn-row view-switch">' +
-      '<button class="btn f ' + (mode === 'grid' ? 'cap' : 'glass') + '" data-act="photoView" data-v="grid" data-k="pv-grid">All photos</button>' +
-      '<button class="btn f ' + (mode === 'months' ? 'cap' : 'glass') + '" data-act="photoView" data-v="months" data-k="pv-months">By month</button></div>';
+      '<button class="btn f skip ' + (mode === 'grid' ? 'cap' : 'glass') + '" data-act="photoView" data-v="grid" data-k="pv-grid">All photos</button>' +
+      '<button class="btn f skip ' + (mode === 'months' ? 'cap' : 'glass') + '" data-act="photoView" data-v="months" data-k="pv-months">By month</button></div>';
   }
   const monthKey = f => { const m = /^(\d{4})-(\d{2})/.exec(f.date || ''); return m ? m[1] + '-' + m[2] : 'none'; };
   const monthName = key => key === 'none' ? 'No date' : new Date(+key.slice(0, 4), +key.slice(5, 7) - 1, 1).toLocaleString(undefined, { month: 'long' });
