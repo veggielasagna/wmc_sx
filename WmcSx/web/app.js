@@ -20,7 +20,8 @@
       try { localStorage.setItem('wmcsx.' + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ }
     }
   };
-  const prefs = Object.assign({ sound: true, resume: true, intro: true, saver: true, saverMin: 3, slideMusic: 'all' }, Store.get('prefs', {}));
+  const PREF_DEFAULTS = { sound: true, resume: true, intro: true, saver: true, saverMin: 3, slideMusic: 'all' };
+  const prefs = Object.assign({}, PREF_DEFAULTS, Store.get('prefs', {}));
   const savePrefs = () => Store.set('prefs', prefs);
 
   /* ================================================================ Bridge to the native app */
@@ -73,7 +74,7 @@
     if (u.indexOf('usbthumb:') === 0) return native ? 'https://media.wmcsx/usbthumb?p=' + encodeURIComponent(u.slice(9)) : '';
     if (u.indexOf('usb:') === 0) return native ? (size ? 'https://media.wmcsx/usbthumb?p=' : 'https://full.wmcsx/usbfile?p=') + encodeURIComponent(u.slice(4)) : '';
     // A frame from the video itself, for videos the server has no poster for.
-    if (u.indexOf('vthumb:') === 0) return native ? 'https://media.wmcsx/vthumb?u=' + encodeURIComponent(u.slice(7)) + '&s=' + (size || ART_SIZE) : (window.WmcMock && WmcMock.frame ? WmcMock.frame(u.slice(7)) : '');
+    if (u.indexOf('vthumb:') === 0) return native ? 'https://frame.wmcsx/vthumb?u=' + encodeURIComponent(u.slice(7)) + '&s=' + (size || ART_SIZE) : (window.WmcMock && WmcMock.frame ? WmcMock.frame(u.slice(7)) : '');
     if (!native) return u;
     // Full-size pictures use their own address so they never queue behind tiles.
     return (size ? 'https://media.wmcsx/img?u=' : 'https://full.wmcsx/img?u=') + encodeURIComponent(u) + (size ? '&s=' + size : '');
@@ -690,7 +691,8 @@
   };
   let playCounted = false, lastPlayPos = 0;
   function countPlay(changed) {
-    if (changed || P.position < lastPlayPos - 5) playCounted = false; // new song, or it started over
+    // A new song, or the same one starting over (repeat), is a new play; skipping back isn't.
+    if (changed || (P.position < 3 && lastPlayPos > 10)) playCounted = false;
     lastPlayPos = P.position || 0;
     if (playCounted || !P.track || P.state !== 'playing') return;
     if (P.position >= Math.min(30, (P.duration || 60) / 2)) { playCounted = true; History.played(P.track.url); }
@@ -1308,7 +1310,21 @@
     if (Date.now() - lastActivity < (prefs.saverMin || 3) * 60000) return;
     Viz.show({ saver: true });
   }
-  setInterval(checkSaver, 5000);
+  // When the music stops under the visualizer: the screensaver goes away after a minute, and the
+  // visualizer you opened yourself stops keeping the TV awake after 5 minutes (so it can dim).
+  let vizPausedSince = 0;
+  function checkVizIdle() {
+    if (!Viz.open || P.state === 'playing') {
+      vizPausedSince = 0;
+      if (Viz.open && Viz.asleep) { Viz.asleep = false; Bridge.call('keepAwake', { on: true }).catch(() => {}); }
+      return;
+    }
+    if (!vizPausedSince) vizPausedSince = Date.now();
+    const idle = Date.now() - vizPausedSince;
+    if (Viz.saver && idle > 60000) { Viz.close(); return; }
+    if (!Viz.asleep && idle > 5 * 60000) { Viz.asleep = true; Bridge.call('keepAwake', { on: false }).catch(() => {}); }
+  }
+  setInterval(() => { checkVizIdle(); checkSaver(); }, 5000);
   Bridge.on('active', on => { if (on) lastActivity = Date.now(); });
 
   Bridge.on('back', () => {
@@ -1520,8 +1536,8 @@
             // Draw the new items if the grid hasn't filled its first screenful yet.
             if (mine && mine.items === all && mine.shown < CHUNK) more('folder', CHUNK - 1);
           }
-          if (raw && done && !err) {
-            PhotoCache.put(id, raw);
+          if (raw && done) {
+            if (!err) PhotoCache.put(id, raw); // only keep complete folders
             const tl = document.getElementById('timeline');
             if (tl) { tl.innerHTML = timelineHtml(id, files, r_title(id)); if (!cur || !document.body.contains(cur)) restoreFocus(null, true); }
           }
@@ -1875,7 +1891,8 @@
     if (view === 'playback') {
       // A setting with a few values: A steps to the next one.
       const choice = (key, label, opts) => {
-        const cur = opts.find(o => String(o[0]) === String(prefs[key])) || opts[0];
+        // A value that's no longer offered (a genre that left the library) works as the default does.
+        const cur = opts.find(o => String(o[0]) === String(prefs[key])) || opts.find(o => String(o[0]) === String(PREF_DEFAULTS[key])) || opts[0];
         return '<button class="toggle f" data-act="choice" data-pref="' + key + '" data-k="pref-' + key + '" data-opts="' + esc(JSON.stringify(opts)) + '"><span>' + esc(label) + '</span><span class="val">' + esc(cur[1]) + ' ›</span></button>';
       };
       const toggle = (key, label, sub) => '<button class="toggle f' + (prefs[key] ? ' on' : '') + '" data-act="pref" data-pref="' + key + '" data-k="pref-' + key + '"><span><span style="display:block">' + esc(label) + '</span><span class="dim" style="font-size:18px;font-weight:500">' + esc(sub) + '</span></span><span class="sw"></span></button>';
@@ -1975,7 +1992,8 @@
     },
     choice: el => {
       const k = el.dataset.pref, opts = JSON.parse(el.dataset.opts);
-      const i = opts.findIndex(o => String(o[0]) === String(prefs[k]));
+      let i = opts.findIndex(o => String(o[0]) === String(prefs[k]));
+      if (i < 0) i = opts.findIndex(o => String(o[0]) === String(PREF_DEFAULTS[k]));
       const next = opts[(i + 1) % opts.length];
       prefs[k] = next[0]; savePrefs();
       el.querySelector('.val').textContent = next[1] + ' ›';
@@ -2032,7 +2050,7 @@
   const Viewer = {
     open: false, list: [], i: 0, timer: 0, front: 'A', infoTimer: 0, token: 0,
     show(list, i) {
-      this.list = list; this.i = Math.max(0, i); this.open = true;
+      this.list = list; this.i = Math.max(0, i); this.open = true; this.showId = (this.showId || 0) + 1;
       $('#viewer').classList.remove('hidden');
       this.draw(true);
       Sfx.play('select');
@@ -2119,7 +2137,11 @@
       let key = prefs.slideMusic || 'off';
       if (key.indexOf('g:') === 0 && !Lib.genres.some(g => 'g:' + g.name === key)) key = 'all';
       if (key !== 'off' && P.state !== 'playing' && Lib.tracks.length) {
-        Mixes.play(key, { stay: true }).then(() => { if (P.state === 'playing' || P.track) this.music = true; });
+        const id = this.showId;
+        Mixes.play(key, { stay: true }).then(() => {
+          if (this.open && this.showId === id) this.music = true;
+          else if (P.state === 'playing') control('toggle'); // the photos were closed before it started
+        });
         toast('Slideshow · ' + Mixes.name(key), 2200);
       } else toast('Slideshow', 1400);
     },
@@ -2239,7 +2261,11 @@
   // spun, warped and colour-shifted a little, and new shapes are painted on top. What's on screen
   // is the trail of everything before it, so it swirls, tunnels and melts instead of flashing.
   const VIZ_COMMON = [
+    '#ifdef GL_FRAGMENT_PRECISION_HIGH',
+    'precision highp float;',
+    '#else',
     'precision mediump float;',
+    '#endif',
     'varying vec2 v;',
     'uniform vec2 R; uniform float T, bass, mid, high, pulse, mode, hue;',
     'vec3 pal(float t){ return 0.5 + 0.5 * cos(6.28318 * (t + vec3(0.0, 0.18, 0.42))); }',
@@ -2380,7 +2406,7 @@
       Bridge.call('keepAwake', { on: false }).catch(() => {});
       lastActivity = Date.now();
       if (!this.saver) Sfx.play('back');
-      this.saver = false;
+      this.saver = false; this.asleep = false;
     },
     // Give the graphics memory back. A canvas whose context was let go never gets a working one
     // again (that's why the visualizer only opened once in 1.0.27), so it's swapped for a new canvas.

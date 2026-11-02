@@ -35,6 +35,9 @@ namespace WmcSx
         // Full-size photos come from a second address so the browser engine never queues them
         // behind a screen full of tile pictures (it allows only a few requests per address).
         private const string FullHost = "https://full.wmcsx/";
+        // Video frames can take seconds each; they get their own address so they never hold up
+        // album art and photo tiles (the browser engine allows only a few requests per address).
+        private const string FrameHost = "https://frame.wmcsx/";
         // Reading videos in byte ranges didn't make them start sooner (the wait is inside the
         // Xbox's video player), so the player streams them itself as before.
         private const bool UseRangeReading = false;
@@ -251,6 +254,7 @@ namespace WmcSx
                 core.SetVirtualHostNameToFolderMapping(AppHost, folder, CoreWebView2HostResourceAccessKind.Allow);
                 core.AddWebResourceRequestedFilter(MediaHost + "*", CoreWebView2WebResourceContext.All);
                 core.AddWebResourceRequestedFilter(FullHost + "*", CoreWebView2WebResourceContext.All);
+                core.AddWebResourceRequestedFilter(FrameHost + "*", CoreWebView2WebResourceContext.All);
                 core.WebResourceRequested += OnWebResourceRequested;
                 core.WebMessageReceived += OnWebMessageReceived;
                 core.NavigationCompleted += (s, e) => view.Focus(FocusState.Programmatic);
@@ -662,6 +666,9 @@ namespace WmcSx
         private static readonly System.Threading.SemaphoreSlim frameGate = new System.Threading.SemaphoreSlim(1, 1);
         private static readonly HashSet<string> frameFailed = new HashSet<string>();
         private static int framesMade;
+        private static int framesWaiting;
+        // Set while a video is open, so a frame being grabbed stops instead of decoding alongside it.
+        private static volatile bool framesPaused;
 
         private async Task<byte[]> FetchVideoFrame(string url, uint size)
         {
@@ -671,6 +678,15 @@ namespace WmcSx
             if (saved != null) return saved;
             lock (frameFailed) { if (frameFailed.Contains(url)) return null; }
             if (videoOpen || inBackground) return null;
+            // Requests the page has given up on (tiles scrolled away) can't be cancelled here, so don't
+            // let them pile up: past a handful waiting, answer "not now"; the tile asks again later.
+            if (System.Threading.Interlocked.Increment(ref framesWaiting) > 6)
+            {
+                System.Threading.Interlocked.Decrement(ref framesWaiting);
+                return null;
+            }
+            try
+            {
             await frameGate.WaitAsync();
             try
             {
@@ -679,6 +695,8 @@ namespace WmcSx
                 if (saved != null) return saved;
                 var clock = System.Diagnostics.Stopwatch.StartNew();
                 var bytes = await GrabFrame(url, size);
+                // Stopped because a video started or the app went to the background: not a failure.
+                if (bytes == null && (framesPaused || videoOpen || inBackground)) return null;
                 if (bytes == null)
                 {
                     lock (frameFailed) frameFailed.Add(url);
@@ -694,6 +712,23 @@ namespace WmcSx
             {
                 frameGate.Release();
             }
+            }
+            finally
+            {
+                System.Threading.Interlocked.Decrement(ref framesWaiting);
+            }
+        }
+
+        // Waits for a step of the frame grab; gives up at the time limit or when a video starts.
+        private static async Task<bool> FrameStep(Task step, int ms)
+        {
+            var limit = DateTime.UtcNow.AddMilliseconds(ms);
+            while (!step.IsCompleted)
+            {
+                if (framesPaused || DateTime.UtcNow > limit) return false;
+                await Task.WhenAny(step, Task.Delay(200));
+            }
+            return true;
         }
 
         private static async Task<byte[]> GrabFrame(string url, uint size)
@@ -709,7 +744,7 @@ namespace WmcSx
                 mp.MediaOpened += (s, e) => opened.TrySetResult(true);
                 mp.MediaFailed += (s, e) => opened.TrySetResult(false);
                 mp.Source = MediaSource.CreateFromUri(new Uri(url));
-                if (await Task.WhenAny(opened.Task, Task.Delay(15000)) != opened.Task || !opened.Task.Result) return null;
+                if (!await FrameStep(opened.Task, 15000) || !opened.Task.Result) return null;
 
                 var session = mp.PlaybackSession;
                 double dur = session.NaturalDuration.TotalSeconds;
@@ -718,14 +753,21 @@ namespace WmcSx
 
                 // Frames arrive while it plays (muted); take the second one after the jump, as the
                 // first can still be from before it.
+                // If the file can't jump (or never says it did), take a frame from about 1.5 s of play.
                 var ready = new TaskCompletionSource<bool>();
-                int afterSeek = -1;
+                int afterSeek = -1, frames = 0;
                 session.SeekCompleted += (s, e) => { afterSeek = 0; };
-                mp.VideoFrameAvailable += (s, e) => { if (afterSeek >= 0 && ++afterSeek >= 2) ready.TrySetResult(true); };
-                session.Position = TimeSpan.FromSeconds(at);
+                mp.VideoFrameAvailable += (s, e) =>
+                {
+                    frames++;
+                    if ((afterSeek >= 0 && ++afterSeek >= 2) || frames >= 45) ready.TrySetResult(true);
+                };
+                if (session.CanSeek) session.Position = TimeSpan.FromSeconds(at);
+                else afterSeek = 0;
                 mp.Play();
-                if (await Task.WhenAny(ready.Task, Task.Delay(10000)) != ready.Task) return null;
+                if (!await FrameStep(ready.Task, 10000)) return null;
                 mp.Pause();
+                if (framesPaused) return null;
 
                 uint vw = session.NaturalVideoWidth, vh = session.NaturalVideoHeight;
                 if (vw == 0 || vh == 0) return null;
@@ -1120,6 +1162,7 @@ namespace WmcSx
 
         private async Task OpenVideo(JsonObject a)
         {
+            framesPaused = true;
             string url = J.Str(a, "url", "");
             if (videoOpen)
             {
@@ -1241,6 +1284,7 @@ namespace WmcSx
         {
             if (!videoOpen) return;
             videoOpen = false;
+            framesPaused = false;
             videoClosedAt = DateTime.UtcNow;
             Log.Write("Video: closed" + (ended ? " (finished)" : ""));
             double pos = video.PlaybackSession.Position.TotalSeconds;
