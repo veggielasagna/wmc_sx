@@ -42,12 +42,36 @@ window.WmcMock = (function () {
   for (let i = 0; i < 18; i++) {
     add('v-f', { id: 'vid' + i, kind: 'video', title: 'Home video ' + (i + 1), duration: 1200 + i * 300, url: 'http://nas/video' + i + '.mp4', art: '' });
   }
-  // A very big folder, to check folders over 5,000 items load completely.
+  // Made-up "photos": simple painted landscapes, so the viewer and slideshow have something to show.
+  const pics = [];
+  function photo(n) {
+    const k = n % 16;
+    if (pics[k]) return pics[k];
+    const c = document.createElement('canvas'); c.width = 960; c.height = 640;
+    const x = c.getContext('2d'), hue = (k * 47) % 360;
+    const sky = x.createLinearGradient(0, 0, 0, 640);
+    sky.addColorStop(0, 'hsl(' + hue + ',70%,72%)'); sky.addColorStop(0.6, 'hsl(' + ((hue + 30) % 360) + ',80%,85%)'); sky.addColorStop(1, 'hsl(' + ((hue + 60) % 360) + ',40%,40%)');
+    x.fillStyle = sky; x.fillRect(0, 0, 960, 640);
+    x.fillStyle = 'hsla(45,100%,90%,.9)'; x.beginPath(); x.arc(200 + k * 37 % 560, 170 + k * 13 % 120, 60, 0, 7); x.fill();
+    for (let m = 0; m < 3; m++) {
+      x.fillStyle = 'hsl(' + ((hue + 180 + m * 20) % 360) + ',35%,' + (35 - m * 8) + '%)';
+      x.beginPath(); x.moveTo(0, 640);
+      for (let px = 0; px <= 960; px += 40) x.lineTo(px, 380 + m * 70 + Math.sin(px / 90 + k + m * 2) * (60 - m * 12));
+      x.lineTo(960, 640); x.fill();
+    }
+    return (pics[k] = c.toDataURL('image/jpeg', 0.85));
+  }
+  const pad = v => String(v).padStart(2, '0');
+  // A very big folder, to check folders over 5,000 items load completely. Dated over 12 years.
   const big = add('p-f', { id: 'pbig', kind: 'container', title: 'Phone backup', childCount: 30214 });
-  for (let i = 0; i < 30214; i++) add(big.id, { id: 'pb' + i, kind: 'image', title: 'IMG_' + (10000 + i), url: '', thumb: '' });
+  const t0 = Date.UTC(2014, 2, 1), t1 = Date.UTC(2026, 9, 28);
+  for (let i = 0; i < 30214; i++) {
+    const d = new Date(t0 + (t1 - t0) * Math.pow(i / 30214, 0.8));
+    add(big.id, { id: 'pb' + i, kind: 'image', title: 'IMG_' + (10000 + i), url: '', thumb: '', mockPic: i, date: d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()) + 'T12:00:00' });
+  }
   for (let f = 0; f < 3; f++) {
     const pf = add('p-f', { id: 'pf' + f, kind: 'container', title: ['Vacation', 'Family', 'Screenshots'][f], childCount: 12 });
-    for (let i = 0; i < 12; i++) add(pf.id, { id: 'ph' + f + '-' + i, kind: 'image', title: 'IMG_' + (1000 + f * 100 + i), url: '', thumb: '' });
+    for (let i = 0; i < 12; i++) add(pf.id, { id: 'ph' + f + '-' + i, kind: 'image', title: 'IMG_' + (1000 + f * 100 + i), url: '', thumb: '', mockPic: f * 12 + i, date: '2025-0' + (f + 6) + '-' + pad(i + 1) });
   }
 
   const server = { id: 'uuid:homenas', name: 'Home NAS', location: 'http://192.168.1.20:50001/desc/device.xml', host: '192.168.1.20', model: 'NAS', manufacturer: 'Synology' };
@@ -79,7 +103,7 @@ window.WmcMock = (function () {
       case 'browse': {
         const node = nodes[a.id];
         if (!node) return Promise.reject(new Error('Not found'));
-        const items = node.children.slice(a.start, a.start + a.count);
+        const items = node.children.slice(a.start, a.start + a.count).map(it => it.mockPic != null ? Object.assign({}, it, { url: photo(it.mockPic), thumb: photo(it.mockPic) }) : it);
         return wait({ items: items, total: node.children.length, returned: items.length }, 40);
       }
       case 'usbList':

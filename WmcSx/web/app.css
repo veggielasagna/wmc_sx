@@ -208,6 +208,10 @@ body.at-home #clock { display: none; }
 .viewer.hidden { display: none; }
 .vimg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; transition: opacity .3s ease; }
 .vimg.show { opacity: 1; }
+/* Slideshow: slower crossfades and a gentle pan and zoom on each photo. */
+.viewer.slideshow .vimg { transition: opacity 1.6s ease; }
+.vimg.kb { animation: kenburns 8s linear forwards; will-change: transform; }
+@keyframes kenburns { from { transform: translate(var(--kx0), var(--ky0)) scale(var(--ks0)); } to { transform: translate(var(--kx1), var(--ky1)) scale(var(--ks1)); } }
 .vinfo { position: absolute; left: 60px; bottom: 44px; padding: 14px 24px; border-radius: 18px; font-size: 22px; background: rgba(var(--t36),.6); border: 1px solid rgba(var(--t35),.35); transition: opacity .4s ease; }
 .vinfo.gone { opacity: 0; }
 .vmsg { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); max-width: 760px; padding: 32px 40px; border-radius: 24px; text-align: center; background: rgba(var(--t36),.72); border: 1px solid rgba(var(--t35),.35); display: flex; flex-direction: column; gap: 12px; font-size: 22px; color: rgb(var(--t78)); }
@@ -219,6 +223,7 @@ body.at-home #clock { display: none; }
 .toast.hidden { opacity: 0; pointer-events: none; }
 
 @media (prefers-reduced-motion: reduce) {
+  .vimg.kb { animation: none; }
   .swoop, .corner, .waves, .eq span.b, .spinner, .enter, .title-in, .menu-in, .fade-in { animation: none !important; }
 }
 

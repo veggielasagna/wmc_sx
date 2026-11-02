@@ -1797,6 +1797,7 @@
         toggle('resume', 'Resume videos', 'Pick up videos where you left off') +
         toggle('saver', 'Visualizer screensaver', 'Shows the visualizer when music has played for a while with no button presses') +
         choice('saverMin', 'Screensaver starts after', [[1, '1 minute'], [3, '3 minutes'], [5, '5 minutes'], [10, '10 minutes']]) +
+        choice('slideMusic', 'Music during photo slideshows', [['off', 'None'], ['all', 'Shuffle all music'], ['rediscover', 'Rediscover mix']].concat(Lib.genres.map(g => ['g:' + g.name, 'Shuffle ' + g.name]))) +
         '</div><div class="panel glass enter d2"><h2>Continue watching</h2><div class="kv">' + Object.keys(Resume.all()).length + ' videos saved partway through.</div><div class="btn-row"><button class="btn glass f" data-act="clearResume">Clear the list</button></div></div>';
     }
     if (view === 'colors') {
@@ -1980,6 +1981,7 @@
       loadFull();
       this.front = next;
       if (first) old.classList.remove('show');
+      if (this.timer) this.kenBurns(img); else img.classList.remove('kb');
       const info = this.info();
       info.classList.remove('gone');
       clearTimeout(this.infoTimer);
@@ -1990,7 +1992,7 @@
     // "12 of 30,214 · IMG_1012". The total grows while a big folder is still loading.
     info() {
       const el = $('#viewerInfo'), it = this.list[this.i];
-      if (it) el.textContent = (this.i + 1).toLocaleString() + ' of ' + this.list.length.toLocaleString() + ' · ' + (it.title || '') + (this.timer ? ' · Slideshow' : '') + ' · A slideshow · B close';
+      if (it) el.textContent = (this.i + 1).toLocaleString() + ' of ' + this.list.length.toLocaleString() + ' · ' + (it.title || '') + (this.timer ? ' · Slideshow · A pause' : ' · A slideshow') + ' · B close';
       return el;
     },
     step(d) {
@@ -1999,12 +2001,47 @@
       Sfx.play('tick', this.i);
       this.draw(false);
     },
+    // A slow pan and zoom across each photo while the slideshow runs.
+    kenBurns(img) {
+      const r = () => (Math.random() * 2 - 1).toFixed(3);
+      const zoomIn = Math.random() < 0.5, big = (1.1 + Math.random() * 0.06).toFixed(3);
+      img.style.setProperty('--ks0', zoomIn ? '1' : big); img.style.setProperty('--ks1', zoomIn ? big : '1');
+      img.style.setProperty('--kx0', r() * 2.5 + '%'); img.style.setProperty('--ky0', r() * 2.5 + '%');
+      img.style.setProperty('--kx1', r() * 2.5 + '%'); img.style.setProperty('--ky1', r() * 2.5 + '%');
+      img.classList.remove('kb'); void img.offsetWidth; img.classList.add('kb');
+    },
     toggleShow() {
-      if (this.timer) { clearInterval(this.timer); this.timer = 0; toast('Slideshow paused', 1400); }
-      else { this.timer = setInterval(() => { this.i = (this.i + 1) % this.list.length; this.draw(false); }, 6000); toast('Slideshow', 1400); }
+      if (this.timer) {
+        clearInterval(this.timer); this.timer = 0;
+        $('#viewer').classList.remove('slideshow');
+        $$('.vimg.kb').forEach(e => { e.style.animationPlayState = 'paused'; });
+        Bridge.call('keepAwake', { on: false }).catch(() => {});
+        toast('Slideshow paused', 1400);
+        this.info();
+        return;
+      }
+      $('#viewer').classList.add('slideshow');
+      $$('.vimg').forEach(e => { e.style.animationPlayState = ''; });
+      this.timer = setInterval(() => { this.i = (this.i + 1) % this.list.length; this.draw(false); }, 6000);
+      this.kenBurns($('#viewer' + this.front));
+      Bridge.call('keepAwake', { on: true }).catch(() => {});
+      this.info();
+      // Music for the slideshow, unless something is already playing.
+      let key = prefs.slideMusic || 'off';
+      if (key.indexOf('g:') === 0 && !Lib.genres.some(g => 'g:' + g.name === key)) key = 'all';
+      if (key !== 'off' && P.state !== 'playing' && Lib.tracks.length) {
+        Mixes.play(key, { stay: true }).then(() => { if (P.state === 'playing' || P.track) this.music = true; });
+        toast('Slideshow · ' + Mixes.name(key), 2200);
+      } else toast('Slideshow', 1400);
     },
     close() {
+      if (this.timer) Bridge.call('keepAwake', { on: false }).catch(() => {});
       clearInterval(this.timer); this.timer = 0;
+      $('#viewer').classList.remove('slideshow');
+      $$('.vimg').forEach(e => { e.classList.remove('kb'); e.style.animationPlayState = ''; });
+      // Music the slideshow started stops with it; music you were already playing keeps going.
+      if (this.music && P.state === 'playing') control('toggle');
+      this.music = false;
       this.open = false; this.token++;
       $('#viewer').classList.add('hidden');
       $('#viewerA').classList.remove('show'); $('#viewerB').classList.remove('show');
