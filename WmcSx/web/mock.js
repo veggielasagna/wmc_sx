@@ -34,7 +34,7 @@ window.WmcMock = (function () {
         add(alb.id, {
           id: 't' + n, kind: 'audio', title: words[(n * 7) % words.length] + ' ' + words[(n * 3 + 1) % words.length],
           artist: a, album: album, genre: genres[(ai + b) % genres.length], track: t + 1, duration: 150 + (n * 37) % 160,
-          url: 'http://nas/track' + n + '.mp3', art: ''
+          url: 'http://nas/track' + n + '.mp3', art: '', mockArt: 100 + ai * 3 + b
         });
       }
     }
@@ -103,7 +103,7 @@ window.WmcMock = (function () {
       case 'browse': {
         const node = nodes[a.id];
         if (!node) return Promise.reject(new Error('Not found'));
-        const items = node.children.slice(a.start, a.start + a.count).map(it => it.mockPic != null ? Object.assign({}, it, { url: photo(it.mockPic), thumb: photo(it.mockPic) }) : it);
+        const items = node.children.slice(a.start, a.start + a.count).map(it => it.mockPic != null ? Object.assign({}, it, { url: photo(it.mockPic), thumb: photo(it.mockPic) }) : it.mockArt != null ? Object.assign({}, it, { art: photo(it.mockArt) }) : it);
         return wait({ items: items, total: node.children.length, returned: items.length }, 40);
       }
       case 'usbList':

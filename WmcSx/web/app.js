@@ -2233,7 +2233,7 @@
     }
   };
 
-  const VIZ_STYLES = ['Kaleidoscope', 'Tunnel', 'Liquid', 'Fractal'];
+  const VIZ_STYLES = ['Kaleidoscope', 'Tunnel', 'Liquid', 'Fractal', 'Starfield', 'Ribbons', 'Album Colors'];
   // Video feedback (the idea behind Milkdrop): every frame starts from the previous frame, zoomed,
   // spun, warped and colour-shifted a little, and new shapes are painted on top. What's on screen
   // is the trail of everything before it, so it swirls, tunnels and melts instead of flashing.
@@ -2250,7 +2250,7 @@
   ].join('\n');
   const VIZ_FEED = VIZ_COMMON + [
     'uniform sampler2D prev;',
-    'uniform float zoom, rot, warp, decay, hueStep, seg, srcAmt; uniform vec2 px;',
+    'uniform float zoom, rot, warp, decay, hueStep, seg, srcAmt; uniform vec2 px; uniform vec3 c1, c2, c3; uniform float sharp;',
     'vec3 hueRot(vec3 c, float a){ vec3 k = vec3(0.57735); float ca = cos(a), sa = sin(a); return c * ca + cross(k, c) * sa + k * dot(k, c) * (1.0 - ca); }',
     'vec2 fold(vec2 p, float n){ float s = 6.28318 / n, a = mod(atan(p.y, p.x), s); a = abs(a - s * 0.5); return length(p) * vec2(cos(a), sin(a)); }',
     'vec3 source(vec2 uv){',
@@ -2273,6 +2273,35 @@
     '    float f = sin(p.x * 1.7 + T) + sin(p.y * 2.1 - T * 0.8) + sin((p.x + p.y) * 1.3 + T * 0.6) + sin(length(p) * 2.5 - T * 1.4);',
     '    return pal(f * 0.25 + hue) * smoothstep(0.9, 1.0, abs(sin(f * 2.2))) * 0.75;',
     '  }',
+    '  if (mode > 5.5) {',
+    // Album Colors: slow, folding clouds painted only in colours taken from the album art.
+    '    vec2 p = uv * 2.2;',
+    '    float f1 = fbm(p + vec2(T * 0.12, T * 0.07) + bass * 0.5);',
+    '    float f2 = fbm(p * 1.7 - vec2(T * 0.09, -T * 0.11) + f1 * 1.6);',
+    '    vec3 col = mix(c1, c2, smoothstep(0.3, 0.7, f1));',
+    '    col = mix(col, c3, smoothstep(0.45, 0.8, f2));',
+    '    return col * (0.06 + 1.2 * smoothstep(0.4, 0.78, f2)) * (0.75 + 0.5 * bass);',
+    '  } else if (mode > 4.5) {',
+    // Ribbons: three glowing waves; the bass, middle and treble each move their own.
+    '    vec3 col = vec3(0.0);',
+    '    for (int k = 0; k < 3; k++) {',
+    '      float fk = float(k);',
+    '      float amp = 0.03 + (k == 0 ? bass * 0.26 : k == 1 ? mid * 0.18 : high * 0.12);',
+    '      float fr = 2.0 + fk * 2.6;',
+    '      float w = sin(uv.x * fr + T * (1.1 + fk * 0.7) + fk * 2.0) * amp + sin(uv.x * fr * 2.3 - T * 1.3 + fk) * amp * 0.35;',
+    '      float d = abs(uv.y - (fk - 1.0) * 0.13 - w);',
+    '      vec3 tint = pal(hue + fk * 0.33 + uv.x * 0.08);',
+    '      col += tint * (smoothstep(0.012, 0.0, d) * 1.2 + exp(-d * 55.0) * 0.35);',
+    '    }',
+    '    return col;',
+    '  } else if (mode > 3.5) {',
+    // Starfield: stars scattered across the screen; the zoom streaks them past like warp speed.
+    '    vec2 g = uv * 13.0, id = floor(g), f = fract(g) - 0.5;',
+    '    float rnd = h(id + floor(T * 2.5) * 7.31);',
+    '    vec2 off = vec2(h(id + 3.1), h(id + 5.7)) - 0.5;',
+    '    float star = smoothstep(0.09, 0.0, length(f - off * 0.6)) * step(0.8 - 0.12 * high, rnd);',
+    '    return mix(vec3(1.0), pal(hue + rnd), 0.4) * star * 1.6;',
+    '  }',
     // Fractal: the "kali" set, which folds space into endless filigree; the music bends it.
     '  vec2 p = uv * (1.4 + 0.25 * sin(T * 0.09));',
     '  vec2 c = vec2(-0.72 + 0.07 * sin(T * 0.13) + 0.08 * mid, -0.52 + 0.07 * cos(T * 0.11) + 0.1 * bass);',
@@ -2293,12 +2322,13 @@
     '  if (mode > 1.5 && mode < 2.5) q += vec2(-g.y, g.x) * warp * 3.0 + g * warp;',
     '  else q += g * warp;',
     '  if (mode > 0.5 && mode < 1.5) q *= 1.0 + 0.012 * sin(r * 18.0 - T * 4.0) * (0.3 + bass);',
+    '  if (mode > 4.5 && mode < 5.5) q.y -= 0.006;', // ribbons: trails rise like smoke
     '  vec2 st = q / asp + 0.5;',
     '  st = 1.0 - abs(1.0 - mod(st, 2.0));', // mirror at the edges instead of pulling in black
     // Each copy of the last frame blurs a little; sharpen it back, so detail survives the trails.
     '  vec3 c0 = texture2D(prev, st).rgb;',
     '  vec3 nb = (texture2D(prev, st + vec2(px.x, 0.0)).rgb + texture2D(prev, st - vec2(px.x, 0.0)).rgb + texture2D(prev, st + vec2(0.0, px.y)).rgb + texture2D(prev, st - vec2(0.0, px.y)).rgb) * 0.25;',
-    '  vec3 pc = hueRot(clamp(c0 + (c0 - nb) * 0.55, 0.0, 1.0), hueStep);',
+    '  vec3 pc = hueRot(clamp(c0 + (c0 - nb) * sharp, 0.0, 1.0), hueStep);',
     '  pc = max(pc * decay - 0.0035, 0.0);',
     '  vec3 src = source(mode < 0.5 ? fold(uv, seg) : uv) * srcAmt;',
     '  gl_FragColor = vec4(max(pc, src) + src * 0.2, 1.0);',
@@ -2400,7 +2430,7 @@
         return { pr: pr, u: u };
       };
       const common = ['R', 'T', 'bass', 'mid', 'high', 'pulse', 'mode', 'hue'];
-      const feed = link(VIZ_FEED, common.concat(['prev', 'zoom', 'rot', 'warp', 'decay', 'hueStep', 'seg', 'srcAmt', 'px']));
+      const feed = link(VIZ_FEED, common.concat(['prev', 'zoom', 'rot', 'warp', 'decay', 'hueStep', 'seg', 'srcAmt', 'px', 'c1', 'c2', 'c3', 'sharp']));
       const show = link(VIZ_SHOW, common.concat(['tex', 'kick']));
       if (!feed || !show) return false;
       const buf = gl.createBuffer();
@@ -2455,8 +2485,44 @@
       clearTimeout(this.infoTimer);
       this.infoTimer = setTimeout(() => info.classList.add('gone'), 5000);
       const url = t.url;
+      this.artColors(t);
       this.map = Beats.get(url);
       if (!this.map) Beats.load(t).then(m => { if (this.url === url) this.map = m; });
+    },
+    // Three colours from the album art, for the Album Colors style: the most common strong colours,
+    // brightened so they glow. Without art, colours come from the album's own tile gradient.
+    colors: [[0.95, 0.55, 0.2], [0.6, 0.15, 0.3], [1.0, 0.85, 0.5]],
+    artColors(t) {
+      const hex = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
+      const g = Theme.grads[hash(t.album || t.title) % Theme.grads.length].split(',').map(hex);
+      this.colors = [g[0], g[1], g[0].map(v => Math.min(1, v * 0.5 + 0.55))];
+      const src = mediaUrl(t.art, 96);
+      if (!src) return;
+      const url = t.url;
+      fetch(src).then(r => r.ok ? r.blob() : null).then(b => b ? createImageBitmap(b) : null).then(bm => {
+        if (!bm || this.url !== url) { if (bm) bm.close(); return; }
+        const c = document.createElement('canvas'); c.width = 32; c.height = 32;
+        const x = c.getContext('2d'); x.drawImage(bm, 0, 0, 32, 32); bm.close();
+        const d = x.getImageData(0, 0, 32, 32).data;
+        // Group pixels by hue (12 buckets) and weigh each by how colourful and bright it is.
+        const buckets = [];
+        for (let i = 0; i < d.length; i += 4) {
+          const r = d[i] / 255, gg = d[i + 1] / 255, b = d[i + 2] / 255;
+          const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b), sat = mx ? (mx - mn) / mx : 0;
+          const hsl = Theme.rgbToHsl(d[i], d[i + 1], d[i + 2]);
+          const k = Math.floor(hsl[0] / 30) % 12, w = (0.15 + sat) * (0.2 + mx);
+          const B = buckets[k] || (buckets[k] = { w: 0, c: [0, 0, 0] });
+          B.w += w; B.c[0] += r * w; B.c[1] += gg * w; B.c[2] += b * w;
+        }
+        const top = buckets.filter(Boolean).sort((p, q) => q.w - p.w).slice(0, 3).map(B => {
+          // Richer than the art (pale covers would wash out), and as bright as it can be.
+          const c3 = B.c.map(v => v / B.w), l = (c3[0] + c3[1] + c3[2]) / 3;
+          const sat = c3.map(v => Math.max(0, l + (v - l) * 2.2)), m = Math.max(sat[0], sat[1], sat[2]) || 1;
+          return sat.map(v => Math.min(1, v / m * 0.95));
+        });
+        while (top.length < 3) top.push(top.length ? top[0].map(v => v * 0.6) : [1, 0.6, 0.3]);
+        this.colors = top;
+      }).catch(() => { /* keep the gradient colours */ });
     },
     hint(text, ms) {
       const h = $('#vizHint');
@@ -2511,15 +2577,21 @@
       const L = this.lvl, ph = this.phys;
       L.bass = ease(L.bass, tb, 22, 6); L.mid = ease(L.mid, tm, 14, 5); L.high = ease(L.high, th, 18, 6);
       ph.zoomKick *= Math.exp(-dt * 5); ph.rotVel *= Math.exp(-dt * 1.6);
-      const hueStep = (0.002 + 0.012 * L.high) * dt * 60 + ph.hueKick * Math.min(1, dt * 8);
-      ph.hueKick *= Math.exp(-dt * 8);
       const s = this.style, k60 = dt * 60, slow = playing ? 1 : 0.3;
-      const baseZoom = [0.007, 0.018, 0.002, 0.004][s], baseDecay = [0.972, 0.972, 0.976, 0.95][s];
-      let zoom = Math.pow(1 + (baseZoom + 0.014 * L.bass + ph.zoomKick) * slow, k60);
+      // Album Colors keeps to the album's colours, so its trails don't drift round the colour wheel.
+      const hueStep = s === 6 ? 0 : (0.002 + 0.012 * L.high) * dt * 60 + ph.hueKick * Math.min(1, dt * 8);
+      ph.hueKick *= Math.exp(-dt * 8);
+      //               Kaleid  Tunnel  Liquid  Fractal Stars   Ribbons Album
+      const baseZoom = [0.007, 0.018, 0.002, 0.004, 0.03, 0.001, 0.003][s];
+      const baseDecay = [0.972, 0.972, 0.976, 0.95, 0.88, 0.935, 0.95][s];
+      // How hard each copy of the last frame is sharpened. Slow drifts (ribbons, album) ring if pushed.
+      const sharp = [0.55, 0.55, 0.55, 0.55, 0.25, 0.12, 0.15][s];
+      const kickMul = s === 4 ? 2.2 : s === 5 ? 0.3 : 1;          // stars jump forward on the beat
+      let zoom = Math.pow(1 + (baseZoom + 0.014 * L.bass * (s === 4 ? 2.5 : 1) + ph.zoomKick * kickMul) * slow, k60);
       if (s === 1) zoom = 1 / zoom; // the tunnel pulls everything toward the middle instead
-      const srcAmt = (0.5 + 0.55 * L.bass + 0.25 * pulse) * [1, 1, 0.7, 0.85][s];
-      const rot = (ph.dir * 0.003 + ph.rotVel) * k60 * slow * (s === 1 ? 1.6 : 1);
-      const warp = (0.003 + 0.012 * L.mid) * k60 * slow * (s === 2 ? 2.5 : 1);
+      const srcAmt = (0.5 + 0.55 * L.bass + 0.25 * pulse) * [1, 1, 0.7, 0.85, 1, 1, 0.85][s];
+      const rot = (ph.dir * 0.003 + ph.rotVel) * k60 * slow * [1, 1.6, 1, 1, 0.4, 0.15, 0.6][s];
+      const warp = (0.003 + 0.012 * L.mid) * k60 * slow * [1, 1, 2.5, 1, 0, 1.4, 1.2][s];
       const decay = Math.pow(baseDecay, k60);
       const hue = this.hueBase + T * 0.01;
       const cv = $('#vizCanvas'), W = cv.width, H = cv.height;
@@ -2538,7 +2610,9 @@
       common(f);
       gl.uniform1f(f.u.zoom, zoom); gl.uniform1f(f.u.rot, rot); gl.uniform1f(f.u.warp, warp); gl.uniform1f(f.u.decay, decay);
       gl.uniform1f(f.u.hueStep, hueStep); gl.uniform1f(f.u.seg, ph.seg); gl.uniform1f(f.u.srcAmt, srcAmt);
-      gl.uniform2f(f.u.px, 1 / W, 1 / H);
+      gl.uniform2f(f.u.px, 1 / W, 1 / H); gl.uniform1f(f.u.sharp, sharp);
+      const ac = this.colors;
+      gl.uniform3f(f.u.c1, ac[0][0], ac[0][1], ac[0][2]); gl.uniform3f(f.u.c2, ac[1][0], ac[1][1], ac[1][2]); gl.uniform3f(f.u.c3, ac[2][0], ac[2][1], ac[2][2]);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       // 2. Onto the screen, with colour fringes on the bass.
       const d = this.progs.show;
