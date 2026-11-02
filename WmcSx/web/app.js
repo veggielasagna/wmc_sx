@@ -1438,8 +1438,12 @@
           if (fv) id = fv.id;
           else first = { items: top, done: true };
         }
+        if (!first && kind === 'photo') { const c = PhotoCache.get(id); if (c) first = { items: c, done: true }; }
         if (!first) first = await browseProgressive(id);
       }
+      // Everything the server sent for this folder, kept for the timeline (photos only).
+      const raw = kind === 'photo' && source !== 'usb' ? first.items.slice() : null;
+      if (raw && first.done) PhotoCache.put(id, raw);
       const want = kind === 'music' ? 'audio' : kind === 'video' ? 'video' : 'image';
       const all = [], files = [], tracks = [];
       let folderCount = 0;
@@ -1481,8 +1485,16 @@
             : trackRow(x, i, false),
           open: x => x.folder ? openFolder(x.folder) : playTracks(tracks, x._n)
         });
+      } else if (kind === 'photo' && raw && photoMode() === 'months' && files.some(f => f.date)) {
+        // Timeline: subfolders first, then the photos grouped by month once they've all arrived.
+        const subfolders = all.filter(x => x.folder);
+        html = countLine + viewSwitch('months') + (subfolders.length ? coll('folder', subfolders, {
+          cols: 5,
+          item: (x, i) => card(x, i, { cls: 'photo', icon: 'folder', seed: x.folder.title, t1: x.folder.title, t2: x.folder.childCount != null ? x.folder.childCount + ' items' : 'Folder', art: '' }),
+          open: x => openFolder(x.folder)
+        }) : '') + '<div id="timeline">' + (first.done ? timelineHtml(id, files, r_title(id)) : '<div class="empty glass fade-in"><h2>Sorting photos by date…</h2><p id="tlProgress">' + files.length.toLocaleString() + ' photos so far</p><div class="spinner"></div></div>') + '</div>';
       } else {
-        html = countLine + coll('folder', all, {
+        html = countLine + (kind === 'photo' && raw && files.some(f => f.date) && files.length >= 40 ? viewSwitch('grid') : '') + coll('folder', all, {
           cols: kind === 'video' ? 6 : 5,
           item: (x, i) => x.folder ? card(x, i, { cls: kind === 'video' ? 'poster' : 'photo', icon: x.folder.drive ? 'usb' : 'folder', seed: x.folder.title, t1: x.folder.title, t2: x.folder.childCount != null ? x.folder.childCount + ' items' : 'Folder', art: '' })
             : kind === 'video' ? videoCard({ title: x.title, art: x.art || x.thumb, duration: x.duration, url: x.url }, i)
@@ -1496,23 +1508,73 @@
       }
       if (!first.done && first.onMore) {
         // Keep adding the rest of a big folder while this screen is open.
-        const mine = Colls.folder;
-        // Wait until the grid is on screen before adding to it.
-        setTimeout(() => first.onMore((items, total, done, err) => {
-          if (Colls.folder !== mine) return false;   // left this folder: stop reading
+        // Wait until the screen is drawn, then remember it, so reading stops when you leave.
+        setTimeout(() => {
+          const mine = Colls.folder, screen = document.getElementById('folderCount');
+          first.onMore((items, total, done, err) => {
+          if (!screen || !screen.isConnected) return false;   // left this folder: stop reading
           if (items) {
             take(items);
+            if (raw) raw.push.apply(raw, items);
             // Draw the new items if the grid hasn't filled its first screenful yet.
-            if (mine.shown < CHUNK) more('folder', CHUNK - 1);
+            if (mine && mine.items === all && mine.shown < CHUNK) more('folder', CHUNK - 1);
           }
+          if (raw && done && !err) {
+            PhotoCache.put(id, raw);
+            const tl = document.getElementById('timeline');
+            if (tl) { tl.innerHTML = timelineHtml(id, files, r_title(id)); if (!cur || !document.body.contains(cur)) restoreFocus(null, true); }
+          }
+          const tp = document.getElementById('tlProgress');
+          if (tp) tp.textContent = files.length.toLocaleString() + ' photos so far';
           const el = document.getElementById('folderCount');
           if (el) el.textContent = countText(!done) + (err ? ' · couldn’t read the rest' : '');
           if (Viewer.open && Viewer.list === files) Viewer.info();
-        }), 0);
+          });
+        }, 0);
       }
       return html;
     };
   }
+  /* ---------------- Photo timeline */
+  // The last two photo folders, so switching views (or opening a month) doesn't read 30,000
+  // photos from the NAS again.
+  const PhotoCache = {
+    map: new Map(),
+    get(id) { return this.map.get(id) || null; },
+    put(id, items) { this.map.delete(id); this.map.set(id, items); while (this.map.size > 2) this.map.delete(this.map.keys().next().value); }
+  };
+  const photoMode = () => Store.get('photoView', 'grid');
+  const r_title = id => (route.name === 'folder' && route.id === id ? route.title : '') || 'Photos';
+  function viewSwitch(mode) {
+    return '<div class="btn-row view-switch">' +
+      '<button class="btn f ' + (mode === 'grid' ? 'cap' : 'glass') + '" data-act="photoView" data-v="grid" data-k="pv-grid">All photos</button>' +
+      '<button class="btn f ' + (mode === 'months' ? 'cap' : 'glass') + '" data-act="photoView" data-v="months" data-k="pv-months">By month</button></div>';
+  }
+  const monthKey = f => { const m = /^(\d{4})-(\d{2})/.exec(f.date || ''); return m ? m[1] + '-' + m[2] : 'none'; };
+  const monthName = key => key === 'none' ? 'No date' : new Date(+key.slice(0, 4), +key.slice(5, 7) - 1, 1).toLocaleString(undefined, { month: 'long' });
+  const monthTitle = key => key === 'none' ? 'Photos with no date' : monthName(key) + ' ' + key.slice(0, 4);
+  const photoArt = x => x.thumb || x.view || x.art || x.url;
+  // Months newest first, each year under its own heading; photos with no date at the end.
+  function timelineHtml(id, files, folderTitle) {
+    const months = new Map();
+    files.forEach(f => { const k = monthKey(f); let g = months.get(k); if (!g) months.set(k, g = { key: k, files: [] }); g.files.push(f); });
+    const keys = Array.from(months.keys()).sort((a, b) => a === 'none' ? 1 : b === 'none' ? -1 : (a < b ? 1 : -1));
+    let h = '', year = null, list = [];
+    const flush = () => {
+      if (!list.length) return;
+      const y = year;
+      h += '<h2 class="year enter">' + esc(y === 'none' ? 'No date' : y) + '</h2>' + coll('tl' + y, list, {
+        cols: 6,
+        item: (g, i) => card(g, i, { cls: 'photo', art: photoArt(g.files[0]), seed: g.key, icon: 'photo', t1: monthName(g.key), t2: g.files.length.toLocaleString() + (g.files.length === 1 ? ' photo' : ' photos') }),
+        open: g => go({ name: 'photoMonth', id: id, key: g.key, folder: folderTitle })
+      });
+      list = [];
+    };
+    keys.forEach(k => { const y = k === 'none' ? 'none' : k.slice(0, 4); if (y !== year) { flush(); year = y; } list.push(months.get(k)); });
+    flush();
+    return h;
+  }
+
   let folderTracks = [];
   function slimTrack(t) {
     return { title: t.title, artist: t.artist || '', album: t.album || '', genre: t.genre || '', track: t.track || 0, duration: t.duration || 0, url: t.url, art: t.art || '' };
@@ -1596,6 +1658,26 @@
       const usbCrumbs = { music: 'Music › USB drive', video: 'Videos › USB drive', photo: 'Photos › USB drive' };
       const shell = sectionShell({ crumb: r.source === 'usb' ? usbCrumbs[r.kind] : crumbs[r.kind], title: r.title || 'Folder', hints: [['A', r.kind === 'photo' ? 'View' : 'Play'], ['B', 'Back']] });
       return { shell: shell, title: r.title, content: loading(), load: folderLoader(r.kind, r.source, r.id) };
+    },
+
+    photoMonth(r) {
+      const shell = sectionShell({ crumb: 'Photos › ' + (r.folder || 'Timeline'), title: monthTitle(r.key), hints: [['A', 'View'], ['B', 'Back']] });
+      return {
+        shell: shell, title: monthTitle(r.key), content: loading(),
+        load: async () => {
+          let items = PhotoCache.get(r.id);
+          if (!items) { if (!Lib.server) return libraryGate(); items = await Lib.browseAll(r.id); PhotoCache.put(r.id, items); }
+          const list = items.filter(x => x.kind === 'image' && monthKey(x) === r.key)
+            .sort((a, b) => (a.date || '') < (b.date || '') ? -1 : (a.date || '') > (b.date || '') ? 1 : 0);
+          if (!list.length) return emptyState('No photos here', 'This month has no photos anymore.', '');
+          const day = x => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(x.date || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''; };
+          return '<div class="count-line">' + list.length.toLocaleString() + (list.length === 1 ? ' photo' : ' photos') + ' · A on a photo, then A again for a slideshow</div>' + coll('month', list, {
+            cols: 5,
+            item: (x, i) => card(x, i, { cls: 'photo', art: photoArt(x), seed: x.title, icon: 'photo', t1: x.title, t2: day(x) }),
+            open: (x, i) => Viewer.show(list, i)
+          });
+        }
+      };
     },
 
     usbAll(r) {
@@ -1898,6 +1980,7 @@
       el.querySelector('.val').textContent = next[1] + ' ›';
       Sfx.play('move', i + 1);
     },
+    photoView: el => { Store.set('photoView', el.dataset.v); Sfx.play('move', el.dataset.v === 'months' ? 1 : 0); refreshIf(['folder', 'photos']); },
     pref: el => { const k = el.dataset.pref; prefs[k] = !prefs[k]; savePrefs(); el.classList.toggle('on', prefs[k]); if (k === 'sound' && prefs.sound) Sfx.play('select'); },
     showLog: () => showLogText(false),
     showPrevLog: () => showLogText(true),
