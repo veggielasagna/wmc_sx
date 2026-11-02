@@ -247,6 +247,7 @@
     person: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c1-4 4-6 7-6s6 2 7 6"/>',
     tag: '<path d="M3 12V4h8l9 9-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
     film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+    shuffle: '<path d="M3 7h3c4 0 6 10 10 10h4M17 14l3 3-3 3M3 17h3c1.5 0 2.7-1.4 3.7-3M14.3 10C15.3 8.4 16.5 7 18 7h2M17 4l3 3-3 3"/>',
     palette: '<path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.3-1.1-1.6-1.1-2.8 0-1 .8-1.7 1.9-1.7h2.1c2.4 0 3.8-1.6 3.8-3.8C20.5 6.6 16.7 3.5 12 3.5z"/><circle cx="7.6" cy="11" r="1.2"/><circle cx="10" cy="7.4" r="1.2"/><circle cx="14.6" cy="7.4" r="1.2"/>'
   };
   const ico = (name, cls) => '<svg class="' + (cls || 'ico') + '" viewBox="0 0 24 24" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
@@ -662,15 +663,96 @@
     const url = P.track ? P.track.url : null;
     const changed = url !== lastTrackUrl;
     lastTrackUrl = url;
+    countPlay(changed);
     updatePlayerUi(changed);
   });
 
-  async function playTracks(list, start, shuffle) {
+  /* ---------------- Play history (for mixes) */
+  // How many times each song was played and when, kept in plays.json on the console.
+  // A play counts once a song has played for 30 seconds (or half of a short song).
+  const History = {
+    data: null, timer: 0,
+    async load() {
+      try { const t = await Bridge.call('loadFile', { name: 'plays.json' }); this.data = t ? JSON.parse(t) : {}; } catch (e) { this.data = {}; }
+    },
+    get(url) { return this.data ? this.data[url] : null; }, // [count, last played (ms)]
+    size() { return this.data ? Object.keys(this.data).length : 0; },
+    played(url) {
+      if (!this.data || !url) return;
+      const e = this.data[url] || [0, 0];
+      e[0]++; e[1] = Date.now();
+      this.data[url] = e;
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => Bridge.call('saveFile', { name: 'plays.json', text: JSON.stringify(this.data) }).catch(() => {}), 3000);
+    }
+  };
+  let playCounted = false, lastPlayPos = 0;
+  function countPlay(changed) {
+    if (changed || P.position < lastPlayPos - 5) playCounted = false; // new song, or it started over
+    lastPlayPos = P.position || 0;
+    if (playCounted || !P.track || P.state !== 'playing') return;
+    if (P.position >= Math.min(30, (P.duration || 60) / 2)) { playCounted = true; History.played(P.track.url); }
+  }
+
+  /* ---------------- Mixes */
+  const shuffled = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; } return a; };
+  const DAY = 86400000;
+  const Mixes = {
+    // The mixes on offer right now, in the order they're shown.
+    list() {
+      const out = [{ key: 'all', title: 'Shuffle all', sub: Lib.tracks.length.toLocaleString() + ' songs', icon: 'shuffle' },
+        { key: 'rediscover', title: 'Rediscover', sub: 'Not heard in a while', icon: 'resume' }];
+      if (this.mostPlayed().length >= 10) out.push({ key: 'most', title: 'Most played', sub: 'Your favorites, shuffled', icon: 'note' });
+      const a = P.track && P.track.artist;
+      if (a && Lib.artists.some(x => x.name === a)) out.push({ key: 'a:' + a, title: 'This artist', sub: a, icon: 'person' });
+      Lib.genres.forEach(g => out.push({ key: 'g:' + g.name, title: g.name, sub: g.tracks.length + ' songs', icon: 'tag' }));
+      return out;
+    },
+    mostPlayed() {
+      return Lib.tracks.filter(t => { const h = History.get(t.url); return h && h[0] >= 2; })
+        .sort((x, y) => History.get(y.url)[0] - History.get(x.url)[0]).slice(0, 100);
+    },
+    name(key) {
+      if (key === 'all') return 'Shuffle all music';
+      if (key === 'rediscover') return 'Rediscover mix';
+      if (key === 'most') return 'Most played';
+      if (key.indexOf('a:') === 0) return 'Shuffle ' + key.slice(2);
+      if (key.indexOf('g:') === 0) return 'Shuffle ' + key.slice(2);
+      return 'Mix';
+    },
+    // The songs for a mix, already in playing order.
+    build(key) {
+      if (key === 'all') return shuffled(Lib.tracks).slice(0, 1000);
+      if (key === 'most') return shuffled(this.mostPlayed());
+      if (key.indexOf('a:') === 0) { const a = Lib.artists.find(x => x.name === key.slice(2)); return a ? shuffled(a.tracks) : []; }
+      if (key.indexOf('g:') === 0) { const g = Lib.genres.find(x => x.name === key.slice(2)); return g ? shuffled(g.tracks).slice(0, 1000) : []; }
+      if (key === 'rediscover') {
+        // Songs you used to play but haven't for a month or more, the most-played first in line,
+        // topped up with songs you've never played.
+        const now = Date.now(), old = [], never = [];
+        Lib.tracks.forEach(t => {
+          const h = History.get(t.url);
+          if (!h) never.push(t);
+          else if (now - h[1] > 30 * DAY) old.push({ t: t, w: h[0] * Math.min(6, (now - h[1]) / (30 * DAY)) * (0.5 + Math.random()) });
+        });
+        const picked = old.sort((x, y) => y.w - x.w).slice(0, 60).map(x => x.t);
+        return shuffled(picked.concat(shuffled(never).slice(0, Math.max(40, 100 - picked.length))));
+      }
+      return [];
+    },
+    play(key, opts) {
+      const list = this.build(key);
+      if (!list.length) { toast('There’s nothing to play in that mix yet.'); return Promise.resolve(); }
+      return playTracks(list, 0, false, opts);
+    }
+  };
+
+  async function playTracks(list, start, shuffle, opts) {
     if (!list || !list.length) return;
     try {
       const st = await Bridge.call('play', { tracks: list, start: start || 0, shuffle: !!shuffle });
       if (st) { P = st; lastTrackUrl = P.track ? P.track.url : null; }
-      go({ name: 'now' });
+      if (!(opts && opts.stay)) go({ name: 'now' });
     } catch (e) {
       toast('Couldn’t start playback. ' + e.message);
     }
@@ -771,7 +853,7 @@
 
   /* ================================================================ Navigation */
   const SECTIONS = [
-    { id: 'music', label: 'Music', tiles: [['Albums', 'grid', { name: 'music', view: 'albums' }], ['Artists', 'person', { name: 'music', view: 'artists' }], ['Search', 'search', { name: 'music', view: 'search' }], ['USB drive', 'usb', { name: 'music', view: 'usb' }]] },
+    { id: 'music', label: 'Music', tiles: [['Albums', 'grid', { name: 'music', view: 'albums' }], ['Artists', 'person', { name: 'music', view: 'artists' }], ['Mixes', 'shuffle', { name: 'music', view: 'mixes' }], ['USB drive', 'usb', { name: 'music', view: 'usb' }]] },
     { id: 'videos', label: 'Videos', tiles: [['Movies', 'film', { name: 'videos', view: 'all' }], ['Continue', 'resume', { name: 'videos', view: 'continue' }], ['Folders', 'folder', { name: 'videos', view: 'folders' }], ['USB drive', 'usb', { name: 'videos', view: 'usb' }]] },
     { id: 'photos', label: 'Photos', tiles: [['Library', 'photo', { name: 'photos', view: 'library' }], ['USB drive', 'usb', { name: 'photos', view: 'usb' }]] },
     { id: 'settings', label: 'Settings', tiles: [['Sources', 'server', { name: 'settings', view: 'sources' }], ['Playback', 'gear', { name: 'settings', view: 'playback' }], ['Colors', 'palette', { name: 'settings', view: 'colors' }], ['About', 'info', { name: 'settings', view: 'about' }]] }
@@ -812,7 +894,7 @@
   function setView(v) {
     // Switch the left-rail view inside a section without a full transition.
     route = Object.assign({}, route, { view: v });
-    Sfx.play('move', ['albums', 'artists', 'songs', 'genres', 'folders', 'usb', 'all', 'continue', 'library', 'sources', 'playback', 'colors', 'index', 'about'].indexOf(v));
+    Sfx.play('move', ['albums', 'artists', 'songs', 'genres', 'mixes', 'folders', 'usb', 'all', 'continue', 'library', 'sources', 'playback', 'colors', 'index', 'about'].indexOf(v));
     $$('.rail[data-v]').forEach(el => el.classList.toggle('cap', el.dataset.v === v));
     const h = $('.sec-head h1');
     const r = renderers[route.name](route);
@@ -1446,12 +1528,12 @@
 
     music(r) {
       const view = r.view || 'albums';
-      const titles = { albums: 'Albums', artists: 'Artists', songs: 'Songs', genres: 'Genres', folders: 'Folders', usb: 'USB drive', search: 'Search' };
+      const titles = { albums: 'Albums', artists: 'Artists', songs: 'Songs', genres: 'Genres', mixes: 'Mixes', folders: 'Folders', usb: 'USB drive', search: 'Search' };
       const out = {
         title: titles[view] || 'Music',
         shell: sectionShell({
           crumb: 'Home › Music', title: titles[view] || 'Music', active: view, search: 'Search music', source: true,
-          rail: [['albums', 'Albums'], ['artists', 'Artists'], ['songs', 'Songs'], ['genres', 'Genres'], ['folders', 'Folders'], ['usb', 'USB drive']],
+          rail: [['albums', 'Albums'], ['artists', 'Artists'], ['songs', 'Songs'], ['genres', 'Genres'], ['mixes', 'Mixes'], ['folders', 'Folders'], ['usb', 'USB drive']],
           hints: [['A', 'Play'], ['Y', 'Search'], ['B', 'Back']]
         })
       };
@@ -1464,6 +1546,11 @@
       if (view === 'albums') out.content = coll('albums', Lib.albums, { cols: 5, item: albumCard, open: a => go({ name: 'album', key: a.key }) });
       else if (view === 'artists') out.content = coll('artists', Lib.artists, { item: (a, i) => row(a, i, { art: a.art, seed: a.name, icon: 'person', t1: a.name, t2: a.albums.size + (a.albums.size === 1 ? ' album · ' : ' albums · ') + a.tracks.length + (a.tracks.length === 1 ? ' song' : ' songs') }), open: a => go({ name: 'artist', name2: a.name }) });
       else if (view === 'songs') out.content = playButtons('songs') + coll('songs', Lib.tracks, { item: (t, i) => trackRow(t, i, false), open: (t, i) => playTracks(Lib.tracks, i) });
+      else if (view === 'mixes') out.content = coll('mixes', Mixes.list(), {
+        cols: 5,
+        item: (m, i) => card(m, i, { cls: 'mix', icon: m.icon, seed: m.key, t1: m.title, t2: m.sub, art: '' }),
+        open: m => Mixes.play(m.key)
+      });
       else if (view === 'genres') out.content = Lib.genres.length ? coll('genres', Lib.genres, { item: (g, i) => row(g, i, { icon: 'tag', seed: g.name, t1: g.name, t2: g.tracks.length + ' songs' }), open: g => go({ name: 'genre', name2: g.name }) }) : emptyState('No genres', 'Your music doesn’t have genre tags.', '');
       return out;
     },
@@ -2368,7 +2455,7 @@
     }
   };
   Bridge.on('player', () => { if (Viz.open) { Viz.sync(); Viz.track(false); } });
-  if (!native) window.WmcDebug = { Viz: Viz, Beats: Beats }; // browser preview only, for testing
+  if (!native) window.WmcDebug = { Viz: Viz, Beats: Beats, Mixes: Mixes, History: History }; // browser preview only, for testing
 
   /* ================================================================ Clock and scaling */
   function clockText() { return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
@@ -2401,6 +2488,7 @@
     }
     Bridge.on('server', s => Lib.addServer(s));
     try { appInfo = (await Bridge.call('info')) || {}; } catch (e) { appInfo = {}; }
+    History.load();
     try { const st = await Bridge.call('state'); if (st) { P = st; lastTrackUrl = P.track ? P.track.url : null; } } catch (e) { /* ignore */ }
     if (route.name === 'now' && !P.track) { route = { name: 'home' }; stack = []; }
     // A fresh start (nothing playing) shows the welcome animation and opens on Home.
