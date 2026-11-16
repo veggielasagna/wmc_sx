@@ -493,7 +493,9 @@ namespace WmcSx
                     if (query.TryGetValue("s", out sz)) uint.TryParse(sz, out size);
                     if (query.TryGetValue("u", out url))
                     {
-                        var data = await FetchImage(url, size);
+                        // Downloading, shrinking and converting run on a background thread, so the
+                        // controller and the interface never wait on picture work.
+                        var data = await Task.Run(() => FetchImage(url, size));
                         if (data != null)
                         {
                             type = data.Item2;
@@ -520,7 +522,7 @@ namespace WmcSx
                     string url;
                     if (query.TryGetValue("u", out url))
                     {
-                        var bytes = await FetchAudio(url);
+                        var bytes = await Task.Run(() => FetchAudio(url));
                         if (bytes != null)
                         {
                             type = "application/octet-stream";
@@ -1441,6 +1443,7 @@ namespace WmcSx
         // Xbox it doesn't notice the app's limit, so it can grow until it crashes ("Out of Memory").
         // When the app gets close to its limit, ask the engine to let go of its caches.
         private DateTime lastFree = DateTime.MinValue;
+        private ulong usedAfterFree;
         private bool freeing;
         private int memoryCheckTicks;
 
@@ -1450,7 +1453,15 @@ namespace WmcSx
             try
             {
                 ulong limit = MemoryManager.AppMemoryUsageLimit, used = MemoryManager.AppMemoryUsage;
-                if (limit > 0 && used > limit / 100 * 70) FreeBrowserMemory("over 70% of the limit");
+                if (limit == 0 || used <= limit / 100 * 70) return;
+                // Freeing makes the engine throw away its caches, and the screen stutters while it
+                // rebuilds them. When memory stayed above 70% after a clean-up, this used to repeat
+                // every 10 seconds and the menus froze over and over. Now it only runs again once
+                // memory has grown noticeably since the last time, or is getting close to the limit.
+                bool nearLimit = used > limit / 100 * 88;
+                bool grew = usedAfterFree == 0 || used > usedAfterFree + limit / 100 * 8;
+                bool longAgo = (DateTime.Now - lastFree).TotalMinutes >= 5;
+                if (nearLimit || grew || longAgo) FreeBrowserMemory(nearLimit ? "over 88% of the limit" : "over 70% of the limit");
             }
             catch
             {
@@ -1473,6 +1484,7 @@ namespace WmcSx
                 core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
                 await Task.Delay(1500);
                 if (web != null && web.CoreWebView2 == core) core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
+                usedAfterFree = MemoryManager.AppMemoryUsage;
                 Log.Write("Freeing browser memory: after " + MemoryText());
             }
             catch (Exception ex)

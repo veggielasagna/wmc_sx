@@ -90,15 +90,26 @@
   // text tints keep the same relationships in every theme.
   const THEMES = [
     { id: 'ember', name: 'Ember', hue: 0, sat: 1, light: 1 },
-    { id: 'aero', name: 'Aero Blue', hue: 190, sat: 0.95, light: 1.06 },
-    { id: 'lagoon', name: 'Lagoon', hue: 158, sat: 0.85, light: 1.02 },
-    { id: 'emerald', name: 'Emerald', hue: 112, sat: 0.78, light: 1 },
     { id: 'gold', name: 'Gold', hue: 18, sat: 1, light: 1.03 },
-    { id: 'rose', name: 'Rose', hue: -30, sat: 0.92, light: 1.03 },
+    { id: 'lime', name: 'Lime', hue: 62, sat: 0.9, light: 1.03 },
+    { id: 'forest', name: 'Forest', hue: 95, sat: 0.55, light: 0.98 },
+    { id: 'emerald', name: 'Emerald', hue: 112, sat: 0.78, light: 1 },
+    { id: 'mint', name: 'Mint', hue: 135, sat: 0.6, light: 1.09 },
+    { id: 'lagoon', name: 'Lagoon', hue: 158, sat: 0.85, light: 1.02 },
+    { id: 'arctic', name: 'Arctic', hue: 178, sat: 0.55, light: 1.18 },
+    { id: 'aero', name: 'Aero Blue', hue: 190, sat: 0.95, light: 1.06 },
+    { id: 'sapphire', name: 'Sapphire', hue: 208, sat: 1, light: 1.03 },
+    { id: 'indigo', name: 'Indigo', hue: 228, sat: 0.85, light: 1.04 },
+    { id: 'lavender', name: 'Lavender', hue: -95, sat: 0.42, light: 1.12 },
     { id: 'amethyst', name: 'Amethyst', hue: -100, sat: 0.85, light: 1.07 },
+    { id: 'violet', name: 'Violet', hue: -75, sat: 0.95, light: 1.05 },
+    { id: 'fuchsia', name: 'Fuchsia', hue: -50, sat: 1, light: 1.04 },
+    { id: 'rose', name: 'Rose', hue: -30, sat: 0.92, light: 1.03 },
+    { id: 'blossom', name: 'Blossom', hue: -22, sat: 0.5, light: 1.1 },
+    { id: 'mocha', name: 'Mocha', hue: 8, sat: 0.4, light: 1 },
+    { id: 'slate', name: 'Slate', hue: 200, sat: 0.3, light: 1.02 },
     { id: 'graphite', name: 'Graphite', hue: 190, sat: 0.1, light: 1.02 }
-  ];
-  const Theme = {
+  ];  const Theme = {
     base: null, grads: GRADS, current: 'ember',
     rgbToHsl(r, g, b) {
       r /= 255; g /= 255; b /= 255;
@@ -464,6 +475,9 @@
     progress: '',
     builtAt: 0,
     savedServer: Store.get('server', null),
+    // One shared collator: localeCompare with options builds a new one for every comparison,
+    // which made sorting a big library take several seconds on the console (the app froze).
+    compare: (() => { const c = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true }); return (a, b) => c.compare(a || '', b || ''); })(),
 
     addServer(s) {
       if (!s || !s.id) return;
@@ -599,7 +613,7 @@
     apply(data) {
       if (data.roots) this.roots = data.roots;
       this.builtAt = data.at || 0;
-      const cmp = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+      const cmp = Lib.compare;
       this.tracks = (data.tracks || []).slice().sort((a, b) => cmp(a.title, b.title));
       this.videos = (data.videos || []).slice().sort((a, b) => cmp(a.title, b.title));
 
@@ -648,11 +662,18 @@
     search(q) {
       q = q.trim().toLowerCase();
       if (!q) return { tracks: [], albums: [], videos: [] };
-      const has = s => (s || '').toLowerCase().indexOf(q) >= 0;
+      // The lower-case text of each item is worked out once and kept, so typing stays quick.
+      const keys = this.searchKeys || (this.searchKeys = new WeakMap());
+      const key = (x, parts) => { let k = keys.get(x); if (k == null) { k = parts.map(v => (v || '').toLowerCase()).join('\n'); keys.set(x, k); } return k; };
+      const pick = (list, parts, max) => {
+        const out = [];
+        for (let i = 0; i < list.length && out.length < max; i++) if (key(list[i], parts(list[i])).indexOf(q) >= 0) out.push(list[i]);
+        return out;
+      };
       return {
-        albums: this.albums.filter(a => has(a.title) || has(a.artist)).slice(0, 20),
-        tracks: this.tracks.filter(t => has(t.title) || has(t.artist) || has(t.album)).slice(0, 300),
-        videos: this.videos.filter(v => has(v.title)).slice(0, 60)
+        albums: pick(this.albums, a => [a.title, a.artist], 20),
+        tracks: pick(this.tracks, t => [t.title, t.artist, t.album], 300),
+        videos: pick(this.videos, v => [v.title], 60)
       };
     }
   };
@@ -911,8 +932,8 @@
   }
   function refreshIf(names) {
     if (names.indexOf(route.name) < 0) return;
-    if (document.activeElement && document.activeElement.tagName === 'INPUT') {
-      if (route.view === 'search') renderSearchResults();
+    if (route.view === 'search' && (route.name === 'music' || route.name === 'videos')) {
+      renderSearchResults();
       return;
     }
     if (route.name === 'home') return; // home tiles don't depend on the library
@@ -926,6 +947,7 @@
   function render(opts) {
     opts = opts || {};
     if (Viz.open && route.name !== 'now') Viz.close();
+    Kbd.close('gone');
     Colls = {};
     loadToken++;
     const screen = $('#screen');
@@ -1068,7 +1090,7 @@
     let best = null, bestScore = Infinity;
     const boxRects = new Map();
     const W = window.innerWidth, H = window.innerHeight;
-    $$('#screen .f').forEach(el => {
+    $$(Kbd.open ? '#kbd .f' : '#screen .f').forEach(el => {
       if (el === from) return;
       if (fromColl && fromColl.contains(el)) return;
       // Measure first and drop anything off screen or scrolled out of its list, so big grids
@@ -1220,6 +1242,16 @@
     if (!e.repeat) keysDown.add(code);
     lastInput = { what: 'key ' + code + (e.repeat ? ' repeat' : ''), t: Date.now() };
     if (code >= 195 && code <= 218) padKeys = true;
+    // A PC keyboard types straight into the on-screen keyboard.
+    if (Kbd.open && code < 195 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const ch = e.key || '';
+      if (ch.length === 1 && ch !== ' ' || ch === ' ' && Kbd.opts.layout !== 'ip') {
+        e.preventDefault();
+        if (Kbd.opts.layout !== 'ip' || /[0-9.:]/.test(ch)) Kbd.type(Kbd.opts.layout === 'ip' ? ch : ch.toLowerCase());
+        return;
+      }
+      if (code === 8) { e.preventDefault(); Kbd.del(); return; }
+    }
     const input = document.activeElement && document.activeElement.tagName === 'INPUT' ? document.activeElement : null;
     let action = KEYMAP[code];
     if (!input && !action) {
@@ -1255,7 +1287,7 @@
     const p = { x: e.clientX, y: e.clientY }, prev = lastMouse;
     lastMouse = p;
     if (!prev || Math.abs(p.x - prev.x) + Math.abs(p.y - prev.y) < 2) return;
-    const el = e.target.closest && e.target.closest('#screen .f');
+    const el = e.target.closest && e.target.closest(Kbd.open ? '#kbd .f' : '#screen .f');
     if (!el || el === cur) return;
     if (Date.now() < settleUntil) { traceInput('ignored pointer at ' + Math.round(p.x) + ',' + Math.round(p.y)); return; }
     lastInput = { what: 'pointer at ' + Math.round(p.x) + ',' + Math.round(p.y), t: Date.now() };
@@ -1268,7 +1300,7 @@
     if (Viz.open) { Viz.close(); return; }
     const hint = e.target.closest && e.target.closest('.hint');
     if (hint && /Visualizer/.test(hint.textContent) && P.track) { Viz.show(); return; }
-    const el = e.target.closest && e.target.closest('#screen .f');
+    const el = e.target.closest && e.target.closest(Kbd.open ? '#kbd .f' : '#screen .f');
     if (!el) return;
     setFocus(el, { noScroll: true, silent: true });
     activate(el);
@@ -1280,6 +1312,7 @@
     // The screensaver goes away on any button and the press does nothing else.
     if (Viz.open && Viz.saver) { Viz.close(); return; }
     if (Viz.open && Viz.handle(action)) return;
+    if (Kbd.open && Kbd.handle(action)) return;
     switch (action) {
       case 'up': case 'down': case 'left': case 'right': moveFocus(action); break;
       case 'a':
@@ -1289,7 +1322,7 @@
       case 'x': if (P.track) control('toggle'); break;
       case 'y':
         if (route.name === 'now') { if (P.track) Viz.show(); break; }
-        if (route.name === 'music' || route.name === 'videos') { setView('search'); const s = $('#searchBox'); if (s) { setFocus(s.closest('.f')); s.focus(); } }
+        if (route.name === 'music' || route.name === 'videos') openSearch();
         break;
       case 'lb': if (P.track) control('prev'); break;
       case 'rb': if (P.track) control('next'); break;
@@ -1306,7 +1339,7 @@
   function checkSaver() {
     if (!prefs.saver || Viz.open || Viewer.open || Intro.active || !isActive()) return;
     if (P.state !== 'playing' || !P.track) return;
-    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+    if (Kbd.open) return;
     if (Date.now() - lastActivity < (prefs.saverMin || 3) * 60000) return;
     Viz.show({ saver: true });
   }
@@ -1398,8 +1431,8 @@
   }
   function sectionShell(o) {
     const rail = o.rail ? '<nav class="rail-col" aria-label="' + esc(o.title) + ' views">' +
-      (o.search ? '<label class="search glass f enter d1" data-k="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>' +
-        '<input id="searchBox" placeholder="' + esc(o.search) + '" value="' + esc(route.q || '') + '" autocomplete="off" spellcheck="false"></label>' : '') +
+      (o.search ? '<button class="search glass f enter d1" data-act="focusSearch" data-k="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>' +
+        '<span id="searchBox" class="q' + (route.q ? '' : ' ph') + '" data-ph="' + esc(o.search) + '">' + esc(route.q || o.search) + '</span></button>' : '') +
       o.rail.map((r, i) => '<button class="rail f enter d' + Math.min(5, i + 1) + (r[0] === o.active ? ' cap' : '') + '" data-act="view" data-v="' + r[0] + '" data-k="rail-' + r[0] + '">' + esc(r[1]) + '</button>').join('') +
       (o.source ? sourceLine() : '') + '</nav>' : '';
     return '<div class="sec-head"><button class="crumb enter" data-act="back">‹ ' + esc(o.crumb) + '</button><h1 class="title-in">' + esc(o.title) + '</h1></div>' +
@@ -1704,7 +1737,7 @@
         content: '<div class="empty glass fade-in"><h2>Searching the drive…</h2><p>Reading song tags. Large drives and iPods can take a minute.</p><div class="spinner"></div></div>',
         load: async () => {
           const items = await Bridge.call('usbScan', { path: r.path, kind: 'audio', max: 8000 });
-          const tracks = items.map(slimTrack).sort((x, y) => (x.artist || '').localeCompare(y.artist || '') || (x.album || '').localeCompare(y.album || '') || (x.track - y.track) || x.title.localeCompare(y.title));
+          const tracks = items.map(slimTrack).sort((x, y) => Lib.compare(x.artist, y.artist) || Lib.compare(x.album, y.album) || (x.track - y.track) || Lib.compare(x.title, y.title));
           if (!tracks.length) return emptyState('No music found', 'This drive doesn’t have any music files WMC SX can play.', '');
           folderTracks = tracks;
           return '<div class="btn-row" style="margin-bottom:18px"><button class="btn cap f" data-act="playList" data-list="folder">Play all</button><button class="btn glass f" data-act="playList" data-list="folder" data-shuffle="1">Shuffle</button></div>' +
@@ -1831,6 +1864,67 @@
     saveNav();
   }
 
+  /* ---------------- On-screen keyboard */
+  // The Xbox's own keyboard doesn't type into the page (its letters never reached the search box),
+  // so WMC SX has its own: a panel along the bottom of the screen that the controller moves around.
+  // A types the key, X deletes, Y adds a space, B puts the keyboard away, Menu is Done. A keyboard
+  // on a PC types straight into it too.
+  const KBD_TEXT = ['1234567890', 'qwertyuiop', 'asdfghjkl\'', 'zxcvbnm-&.'];
+  const KBD_IP = ['123', '456', '789', '.0:'];
+  const Kbd = {
+    open: false, opts: null, value: '',
+    show(opts) {
+      this.opts = opts;
+      this.value = opts.value || '';
+      this.open = true;
+      const el = $('#kbd');
+      const rows = opts.layout === 'ip' ? KBD_IP : KBD_TEXT;
+      const key = (ch, cls, label, act) => '<button class="key f' + (cls ? ' ' + cls : '') + '" data-act="' + (act || 'kbdKey') + '"' + (act ? '' : ' data-ch="' + esc(ch) + '"') + ' data-k="key-' + esc(act || ch) + '">' + (label || esc(ch === ' ' ? 'Space' : ch.toUpperCase())) + '</button>';
+      el.className = 'kbd glass' + (opts.layout === 'ip' ? ' ip' : '');
+      el.innerHTML = '<div class="kbd-field">' + (opts.layout === 'ip' ? '' : '<svg viewBox="0 0 24 24">' + ICONS.search + '</svg>') + '<span class="kbd-text"></span></div>' +
+        rows.map(r => '<div class="kbd-row">' + r.split('').map(ch => key(ch)).join('') + '</div>').join('') +
+        '<div class="kbd-row">' + (opts.layout === 'ip' ? '' : key(' ', 'wide')) + key('', 'mid', 'Delete', 'kbdDel') + key('', 'mid', 'Clear', 'kbdClear') + key('', 'mid cap', esc(opts.done || 'Done'), 'kbdDone') + '</div>' +
+        '<div class="kbd-hints">' + hintsHtml(opts.layout === 'ip' ? [['A', 'Type'], ['X', 'Delete'], ['B', 'Close']] : [['A', 'Type'], ['X', 'Delete'], ['Y', 'Space'], ['B', 'Close']]) + '</div>';
+      this.paint();
+      document.body.classList.add('kbd-open');
+      setFocus(el.querySelector(opts.layout === 'ip' ? '[data-ch="1"]' : '[data-ch="q"]'), { silent: true, why: 'keyboard opened' });
+      Sfx.play('select');
+    },
+    paint() {
+      const t = $('#kbd .kbd-text');
+      if (t) { t.textContent = this.value || this.opts.placeholder || ''; t.classList.toggle('ph', !this.value); }
+    },
+    set(v) {
+      if (v.length > 60) return;
+      this.value = v;
+      this.paint();
+      if (this.opts.onChange) this.opts.onChange(v);
+    },
+    type(ch) { this.set(this.value + ch); Sfx.play('tick', ch.charCodeAt(0) % 12); },
+    del() { if (this.value) { this.set(this.value.slice(0, -1)); Sfx.play('back'); } },
+    close(how) {
+      if (!this.open) return;
+      const opts = this.opts;
+      this.open = false;
+      const el = $('#kbd');
+      el.className = 'kbd hidden';
+      el.innerHTML = '';
+      document.body.classList.remove('kbd-open');
+      if (how === 'gone') return; // the screen was redrawn under it
+      if (how === 'done' && opts.onDone) opts.onDone(this.value);
+      else if (opts.onClose) opts.onClose(this.value);
+    },
+    // Controller buttons while the keyboard is up. Returns true when the press was used here.
+    handle(action) {
+      if (action === 'x') { this.del(); return true; }
+      if (action === 'y') { if (this.opts.layout !== 'ip') this.type(' '); return true; }
+      if (action === 'b') { Sfx.play('back'); this.close('close'); return true; }
+      if (action === 'menu') { this.close('done'); return true; }
+      if (action === 'view') { this.close('gone'); return false; }
+      return false;
+    }
+  };
+
   /* ---------------- Search */
   function searchHtml(kind) {
     return '<div id="searchResults">' + searchResults(kind) + '</div>';
@@ -1855,20 +1949,34 @@
     if (!box) return;
     box.innerHTML = searchResults(route.name === 'videos' ? 'videos' : 'music');
   }
-  document.addEventListener('input', e => {
-    if (e.target && e.target.id === 'searchBox') {
-      route.q = e.target.value;
-      if (route.view !== 'search') {
-        route = Object.assign({}, route, { view: 'search' });
-        $$('.rail[data-v]').forEach(el => el.classList.remove('cap'));
-        const h = $('.sec-head h1'); if (h) h.textContent = 'Search';
-        const box = $('#content'); if (box) box.innerHTML = searchHtml(route.name === 'videos' ? 'videos' : 'music');
-      }
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(renderSearchResults, 250);
-      saveNav();
+  function paintSearchBox() {
+    const b = $('#searchBox');
+    if (b) { b.textContent = route.q || b.dataset.ph; b.classList.toggle('ph', !route.q); }
+  }
+  // Text typed for a search: switch to the Search view if needed and show matches as you type.
+  function typeSearch(q) {
+    route.q = q;
+    paintSearchBox();
+    if (route.view !== 'search') {
+      route = Object.assign({}, route, { view: 'search' });
+      $$('.rail[data-v]').forEach(el => el.classList.remove('cap'));
+      const h = $('.sec-head h1'); if (h) h.textContent = 'Search';
+      const box = $('#content'); if (box) box.innerHTML = searchHtml(route.name === 'videos' ? 'videos' : 'music');
     }
-  });
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderSearchResults, 300);
+    saveNav();
+  }
+  function openSearch() {
+    if (route.name !== 'music' && route.name !== 'videos') return;
+    if (route.view !== 'search') setView('search');
+    Kbd.show({
+      value: route.q || '', placeholder: route.name === 'videos' ? 'Search videos' : 'Search music', done: 'Show results',
+      onChange: typeSearch,
+      onDone: () => { clearTimeout(searchTimer); renderSearchResults(); setFocus($('#searchResults .f') || $('#screen [data-k="search"]'), { why: 'keyboard done' }); },
+      onClose: () => { clearTimeout(searchTimer); renderSearchResults(); setFocus($('#screen [data-k="search"]'), { silent: true, why: 'keyboard closed' }); }
+    });
+  }
   let searchTimer = 0;
 
   /* ---------------- Settings */
@@ -1886,7 +1994,7 @@
       return '<div class="panel glass enter d1"><div class="head"><h2>Media servers on your network</h2><div class="btn-row"><button class="btn cap f" data-act="discover" data-k="discover">' + (discovering ? '<span class="spinner"></span>Searching…' : 'Find my NAS') + '</button></div></div>' + servers +
         '<div class="note">Other media servers on your network appear here automatically.</div></div>' +
         '<div class="panel glass enter d2"><h2>Add by address</h2><div class="kv">If your NAS doesn’t show up, enter its IP address (for example 192.168.1.20).</div>' +
-        '<div class="field"><input class="f" id="ipBox" data-k="ip" placeholder="192.168.1.20" inputmode="decimal" value="' + esc(Store.get('lastIp', '')) + '"><button class="btn glass f" data-act="probe" data-k="probe">Connect</button></div></div>';
+        '<div class="field"><button class="ipfield f' + (Store.get('lastIp', '') ? '' : ' ph') + '" id="ipBox" data-act="editIp" data-k="ip">' + esc(Store.get('lastIp', '') || '192.168.1.20') + '</button><button class="btn glass f" data-act="probe" data-k="probe">Connect</button></div></div>';
     }
     if (view === 'playback') {
       // A setting with a few values: A steps to the next one.
@@ -1962,7 +2070,17 @@
     tile: el => { const t = SECTIONS[homeIdx].tiles[+el.dataset.tile]; go(Object.assign({}, t[2])); },
     view: el => setView(el.dataset.v),
     go: el => { const p = el.dataset.route.split(':'); go({ name: p[0], view: p[1] }); },
-    focusSearch: () => { const s = $('#searchBox'); if (s) { setFocus(s.closest('.f')); s.focus(); } },
+    focusSearch: () => openSearch(),
+    kbdKey: el => Kbd.type(el.dataset.ch),
+    kbdDel: () => Kbd.del(),
+    kbdClear: () => { Kbd.set(''); Sfx.play('back'); },
+    kbdDone: () => Kbd.close('done'),
+    editIp: () => Kbd.show({
+      layout: 'ip', value: Store.get('lastIp', ''), placeholder: '192.168.1.20', done: 'Connect',
+      onChange: v => { const b = $('#ipBox'); if (b) { b.textContent = v || '192.168.1.20'; b.classList.toggle('ph', !v); b.dataset.v = v; } },
+      onDone: v => { setFocus($('#screen [data-k="probe"]') || $('#ipBox'), { silent: true }); Actions.probe(); },
+      onClose: () => setFocus($('#ipBox'), { silent: true })
+    }),
     playList: el => { const list = listFor(el.dataset.list); if (!list.length) return; const shuffle = !!el.dataset.shuffle; playTracks(list, shuffle ? Math.floor(Math.random() * list.length) : 0, shuffle); },
     usbScan: el => go({ name: 'usbAll', path: el.dataset.path }),
     toggle: () => control('toggle'),
@@ -1977,7 +2095,7 @@
       setTimeout(() => { discovering = false; refreshIf(['settings']); if (!Lib.servers.size) toast('No media server answered. Check that DLNA is turned on on your NAS.'); }, 4500);
     },
     probe: () => {
-      const ip = ($('#ipBox') || {}).value || '';
+      const box = $('#ipBox'), ip = (box && box.dataset.v != null ? box.dataset.v : Store.get('lastIp', '')) || '';
       if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip.trim())) { toast('Enter an IP address like 192.168.1.20'); return; }
       Store.set('lastIp', ip.trim());
       toast('Asking ' + ip.trim() + '…', 2500);
