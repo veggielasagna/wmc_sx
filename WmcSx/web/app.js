@@ -1512,7 +1512,18 @@
       take(first.items.filter(x => x.kind !== 'container'));
       if (!all.length && first.done) {
         if (source === 'usb' && !id) return emptyState('No USB drive found', 'Plug a USB drive or a Windows-formatted iPod into the Xbox. Drives need to be exFAT, FAT32 or NTFS.', '<button class="btn glass f" data-act="refresh">Check again</button>');
-        return emptyState('Nothing here', 'This folder doesn’t contain any ' + (kind === 'music' ? 'music' : kind === 'video' ? 'videos' : 'photos') + '.', '');
+        const what = kind === 'music' ? 'music' : kind === 'video' ? 'videos' : 'photos';
+        const others = first.items.filter(x => x.kind !== 'container').length;
+        if (source !== 'usb') {
+          nativeLog('Folder "' + (route.title || id) + '": no ' + what + ' (' + first.items.length + ' items from the server, ' + others + ' of another type)');
+          // The NAS only shares files its indexing service has picked up. On Synology a new folder
+          // is often empty here until it's indexed (or if its shared folder isn't indexed at all).
+          return emptyState('Nothing here yet', others
+            ? 'Your media server lists ' + others + (others === 1 ? ' file' : ' files') + ' here, but none as ' + what + '. Re-indexing on the NAS usually fixes this.'
+            : 'Your media server isn’t sharing anything in this folder yet. On a Synology NAS: open Control Panel › Indexing Service, make sure this shared folder is in Indexed Folders with ' + (kind === 'music' ? 'Music' : kind === 'video' ? 'Video' : 'Photo') + ' ticked, then choose Re-index. It can take a while for big folders.',
+            '<button class="btn glass f" data-act="refresh">Check again</button>');
+        }
+        return emptyState('Nothing here', 'This folder doesn’t contain any ' + what + '.', '');
       }
       const noun = kind === 'music' ? ['song', 'songs'] : kind === 'video' ? ['video', 'videos'] : ['photo', 'photos'];
       const countText = (loading) => {
@@ -2799,7 +2810,7 @@
     }
   };
   Bridge.on('player', () => { if (Viz.open) { Viz.sync(); Viz.track(false); } });
-  if (!native) window.WmcDebug = { Viz: Viz, Beats: Beats, Mixes: Mixes, History: History }; // browser preview only, for testing
+  if (!native) window.WmcDebug = { Viz: Viz, Beats: Beats, Mixes: Mixes, History: History, go: go }; // browser preview only, for testing
 
   /* ================================================================ Clock and scaling */
   function clockText() { return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }

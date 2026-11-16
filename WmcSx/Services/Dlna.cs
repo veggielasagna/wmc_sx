@@ -320,6 +320,27 @@ namespace WmcSx.Services
                         : cls.Contains("videoItem") ? "video"
                         : cls.Contains("imageItem") ? "image"
                         : "other";
+                    // Some servers send music with a plain "object.item" class (for example files
+                    // indexed before their tags were read). Go by the file type the server offers.
+                    if (kind == "other")
+                    {
+                        foreach (var r in el.Elements().Where(x => x.Name.LocalName == "res"))
+                        {
+                            string m = MimeOf((string)r.Attribute("protocolInfo") ?? "");
+                            string u = r.Value.Trim().ToLowerInvariant();
+                            int q = u.IndexOf('?');
+                            if (q >= 0) u = u.Substring(0, q);
+                            if (m.StartsWith("audio/") || AudioExt.Any(e => u.EndsWith(e))) { kind = "audio"; break; }
+                            if (m.StartsWith("video/")) { kind = "video"; break; }
+                            if (m.StartsWith("image/") && !IsThumbRes(r)) { kind = "image"; break; }
+                        }
+                        if (kind == "other" && !loggedOther)
+                        {
+                            loggedOther = true;
+                            Log.Write("DLNA: file of unknown type: " + (Child(el, "title") ?? "?") + " class=" + cls + " res=" +
+                                string.Join(" ", el.Elements().Where(x => x.Name.LocalName == "res").Select(x => (string)x.Attribute("protocolInfo"))));
+                        }
+                    }
                     o["kind"] = J.S(kind);
 
                     XElement main = null, thumb = null;
@@ -397,7 +418,13 @@ namespace WmcSx.Services
             return list;
         }
 
-        private static bool loggedImageRes;
+        private static bool loggedImageRes, loggedOther;
+        private static readonly string[] AudioExt = { ".mp3", ".m4a", ".aac", ".flac", ".wav", ".wma", ".ogg", ".opus", ".alac", ".aif", ".aiff" };
+        private static bool IsThumbRes(XElement r)
+        {
+            string pi = (string)r.Attribute("protocolInfo") ?? "";
+            return pi.Contains("_TN") || pi.Contains("JPEG_SM") || pi.Contains("PNG_SM");
+        }
 
         public static bool WebSafeImage(string mime)
         {
